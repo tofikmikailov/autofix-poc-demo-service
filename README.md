@@ -468,6 +468,7 @@ Not included at this stage: automatic merge, automatic deployment, direct
 push to `main`, and Copilot CLI access to Jira, GitHub, Kubernetes, or
 Docker. A human always reviews and merges the Draft Pull Request.
 
+
 ## Stage 6: Jira as the source of task context
 
 Stage 5 stored the incident's stack trace, message, and endpoint in
@@ -476,37 +477,13 @@ Copilot prompt. Stage 6 removes that duplication: **PostgreSQL now holds
 only orchestration state** (status, branch name, attempt count, timing,
 a `fingerprint` used only for cross-checking). The actual task context —
 exception type, message, stack trace, endpoint — is fetched **live from
-Jira** on every run, via a read-only REST call, and is treated as
-untrusted external input until validated.
+Jira** on every run and treated as untrusted external input until
+validated.
 
-```
-claim-job.sh            claims a job, returns only technical identifiers
-                         (incidentId, jiraKey, fingerprint, branchName,
-                         agentAttemptCount) -- no task content
-        ↓
-fetch-jira-context.sh    GET /rest/api/3/issue/<key> (read-only Jira
-                         credential, distinct from n8n's write credential)
-        ↓
-parse-jira-context.py    converts the Atlassian Document Format
-                         description/comments to plain text; extracts the
-                         AUTOFIX_CONTEXT_V1 machine-readable JSON block;
-                         extracts only comments marked
-                         [AUTOFIX_AGENT_CONTEXT] -- everything else is
-                         discarded
-        ↓
-validate-jira-context.sh cross-checks the fetched context against the
-                         claimed job (jiraKey, incidentId, fingerprint),
-                         re-applies the Stage 5C policy allow-list against
-                         the live ticket, and rejects closed tickets,
-                         missing labels, or malformed context
-        ↓
-build-agent-prompt.sh   renders the Copilot prompt from validated context
-                         only, with the Jira content explicitly delimited
-                         as <UNTRUSTED_JIRA_CONTEXT>...</UNTRUSTED_JIRA_CONTEXT>
-        ↓
-(unchanged Stage 5 pipeline: worktree → Copilot CLI → Validation Gate →
- commit/push/Draft PR → report-result.sh)
-```
+An initial version of Stage 6 (superseded by Stage 6B below) had the
+Agent Runner call Jira REST directly with its own read-only credential.
+Stage 6B replaced that with an n8n-brokered fetch so that **no Jira
+credential ever needs to exist on the Agent Runner host** — see below.
 
 ### Why Jira, not PostgreSQL
 
@@ -526,61 +503,22 @@ Jira ticket content is external, human-editable input and is never
 trusted outright:
 
 - Only comments whose text begins with the literal marker
-  `[AUTOFIX_AGENT_CONTEXT]` are extracted (`parse-jira-context.py`); the
-  marker is stripped and the remainder is passed through. Every other
-  comment is silently discarded and never reaches Copilot.
+  `[AUTOFIX_AGENT_CONTEXT]` are extracted; the marker is stripped and the
+  remainder is passed through. Every other comment is silently discarded
+  and never reaches Copilot.
 - The rendered prompt explicitly wraps all Jira-derived content in
   `<UNTRUSTED_JIRA_CONTEXT>...</UNTRUSTED_JIRA_CONTEXT>` and instructs
   Copilot to treat it as descriptive text only, never as operational
   instructions.
-- `validate-jira-context.sh` independently re-verifies the ticket against
-  the same Stage 5C policy allow-list (service, environment, exception
-  type, request path) using the live Jira data — a ticket edited after
-  Policy Gate approval to fall outside policy is rejected before Copilot
-  ever runs.
-
-### New/changed components
-
-- **`infrastructure/postgres/init/004-jira-agent-context.sql`** — adds
-  `agent_context_source`, `jira_context_fetched_at`, `jira_context_hash`,
-  and `agent_next_attempt_at` (backoff-aware retry scheduling) to
-  `autofix.incident`. Re-runnable against an existing database.
-- **`agent-runner/lib/fetch-jira-context.sh`** — read-only Jira REST
-  fetch with distinct exit codes: `0` success, `2` transient/retryable,
-  `3` auth failure (permanent), `4` not found (permanent), `1` unexpected
-  hard failure.
-- **`agent-runner/lib/parse-jira-context.py`** — ADF → plain-text
-  conversion, `AUTOFIX_CONTEXT_V1` JSON extraction, and the
-  `[AUTOFIX_AGENT_CONTEXT]` comment allow-list described above.
-- **`agent-runner/lib/validate-jira-context.sh`** — the second
-  independent judge in the pipeline (`validate-diff.sh` being the
-  first): rejects a claimed job whose live Jira context no longer
-  matches or no longer qualifies, with reasons recorded via
-  `mark-incident-failed.sh`.
-- **`agent-runner/lib/build-agent-prompt.sh`** — renders
-  `agent-runner/prompts/autofix-prompt.md` from validated context only.
-- **`agent-runner/lib/mark-incident-failed.sh`** — shared helper for
-  `AGENT_FAILED` / `HUMAN_REQUIRED` / backoff-scheduled `RETRY`
-  transitions (1 / 5 / 15 minute schedule keyed on attempt count).
-- **`infrastructure/n8n/workflows/02-publish-incidents-to-jira.json`** —
-  the "Prepare Jira Payload" step now embeds a machine-readable
-  `AUTOFIX_CONTEXT_V1` / `AUTOFIX_CONTEXT_END` JSON block in the ticket
-  description alongside the existing human-readable summary, so the
-  Agent Runner and a human reviewer read the same ticket content.
-  Verified that Jira's Markdown→ADF conversion preserves the fenced
-  ```json block and marker lines exactly as `parse-jira-context.py`
-  expects.
-- **`infrastructure/n8n/workflows/03-queue-autofix-candidates.json`** —
-  the Policy Gate now stamps `agent_context_source = 'JIRA_REST'` when
-  promoting an incident to `AGENT_PENDING`.
+- The fetched context is independently re-verified against the same
+  Stage 5C policy allow-list (service, environment, exception type,
+  request path) — a ticket edited after Policy Gate approval to fall
+  outside policy is rejected before Copilot ever runs.
 
 ### Configuration additions
 
 | Variable | Purpose |
 |---|---|
-| `JIRA_BASE_URL` | Jira Cloud tenant base URL |
-| `JIRA_USER_EMAIL` / `JIRA_API_TOKEN` | Read-only Jira REST credential used by `fetch-jira-context.sh` (for this POC, the same token used elsewhere; a dedicated read-only account is recommended before production use) |
-| `JIRA_FETCH_TIMEOUT_SECONDS` / `JIRA_FETCH_MAX_RETRIES` | Transient-failure retry tuning for `fetch-jira-context.sh` |
 | `ALLOW_LEGACY_DB_CONTEXT_FALLBACK` | Must remain `false`; documents that there is deliberately no fallback to the old PostgreSQL-snapshot behavior |
 
 See `agent-runner/.env.example` for the full list.
@@ -589,11 +527,140 @@ See `agent-runner/.env.example` for the full list.
 
 See
 [`docs/stage6-jira-context-test-report.md`](docs/stage6-jira-context-test-report.md)
-for the Stage 6 test report.
+for the original (superseded) direct-Jira-REST test report, and
+[`docs/stage6-n8n-jira-context-test-report.md`](docs/stage6-n8n-jira-context-test-report.md)
+for the current Stage 6B (n8n-brokered) test report.
 
 ## Scope of Stage 6
 
-Not included at this stage: a dedicated read-only Jira service account
-(the POC reuses the existing token), storage of Jira content in
-PostgreSQL (only a `fingerprint` cross-check remains), and any change to
-Stage 5's no-auto-merge / human-review guarantees.
+Not included at this stage: storage of Jira content in PostgreSQL (only
+a `fingerprint` cross-check remains), and any change to Stage 5's
+no-auto-merge / human-review guarantees.
+
+## Stage 6B: Jira credentials live only in n8n
+
+Stage 6's first version had the Agent Runner hold its own read-only
+Jira REST credential (`JIRA_BASE_URL` / `JIRA_USER_EMAIL` /
+`JIRA_API_TOKEN`). Stage 6B removes that credential from the Agent
+Runner entirely: **Jira credentials exist only inside n8n.** The Agent
+Runner instead calls a local n8n webhook, authenticated with a separate,
+non-Jira shared secret that can be rotated or revoked without touching
+any Jira credential.
+
+```
+claim-job.sh               claims a job, returns only technical identifiers
+                            (incidentId, jiraKey, fingerprint, branchName,
+                            agentAttemptCount) -- no task content
+        ↓
+fetch-ticket-context.sh     POST /webhook/autofix/ticket-context
+                            (X-AutoFix-Runner-Token shared secret --
+                            NOT a Jira credential; the only network call
+                            the Agent Runner makes for task context)
+        ↓
+n8n Workflow 05             "Get AutoFix Ticket Context": validates the
+("05 - Get AutoFix           request, fetches the Jira issue + comments
+ Ticket Context")            using n8n's own Jira credential, converts
+                             ADF → text, extracts the AUTOFIX_CONTEXT_V1
+                             block and only [AUTOFIX_AGENT_CONTEXT]
+                             comments, re-applies the policy allow-list,
+                             sanitizes/truncates every field, computes a
+                             SHA-256 contextHash, and returns one
+                             sanitized JSON response (200) or a
+                             structured error (400/401/404/422/503)
+        ↓
+validate-ticket-response.sh independently re-checks the n8n response:
+                            schema/provenance, jiraKey/incidentId/
+                            fingerprint match the claimed job, allow-list,
+                            contextHash format, non-empty stack trace
+        ↓
+build-agent-prompt.sh      renders the Copilot prompt from the validated
+                            response only, Jira content still delimited
+                            as <UNTRUSTED_JIRA_CONTEXT>...</UNTRUSTED_JIRA_CONTEXT>
+        ↓
+(unchanged Stage 5 pipeline: worktree → Copilot CLI → Validation Gate →
+ commit/push/Draft PR → report-result.sh)
+```
+
+### Why move Jira credentials into n8n
+
+- **Smaller blast radius.** If the Agent Runner host or its `.env` is
+  ever compromised, no Jira credential is exposed — only a revocable
+  local webhook token that cannot read or write Jira at all by itself.
+- **One place to audit/rotate Jira access.** n8n already holds the
+  write-side Jira credential (Workflow 04's comment + transition);
+  Stage 6B makes it the sole holder of the read-side credential too.
+- **Same validation guarantees, one more independent check.** n8n
+  applies the policy allow-list once; `validate-ticket-response.sh`
+  re-applies it a second time on the Agent Runner side before Copilot
+  ever runs, so a compromised or buggy n8n workflow alone cannot smuggle
+  an out-of-policy ticket through.
+
+### New/changed components
+
+- **`infrastructure/n8n/workflows/05-get-autofix-ticket-context.json`**
+  — new workflow, the only place in the whole system besides Workflow 04
+  that holds a Jira credential. Validates the incoming request (shared
+  token, `incidentId`/`jiraKey`/`fingerprint`/`branchName` shape),
+  fetches the issue + comments, converts ADF → text, extracts the
+  `AUTOFIX_CONTEXT_V1` block and `[AUTOFIX_AGENT_CONTEXT]`-marked
+  comments only, re-applies the Stage 5C policy allow-list, sanitizes
+  and truncates every field (summary 300 chars, normalized message 2000,
+  application frame 1000, stack trace 12000, each approved comment 2000,
+  approved comments total 6000), and computes a SHA-256 `contextHash`
+  over the normalized fields using n8n's dedicated Crypto node (Node.js
+  built-in `crypto` is not available inside n8n Code nodes).
+- **`agent-runner/lib/fetch-ticket-context.sh`** — replaces
+  `fetch-jira-context.sh`. POSTs to the local n8n webhook with the
+  shared `X-AutoFix-Runner-Token`; exit codes: `0` success, `2`
+  transient/retryable (n8n reports `JIRA_UNAVAILABLE`, or n8n itself is
+  unreachable), `3` webhook auth failure (permanent), `4` Jira issue not
+  found (permanent), `20` invalid/unsupported ticket context (permanent),
+  `1` unexpected hard failure.
+- **`agent-runner/lib/validate-ticket-response.sh`** — replaces
+  `parse-jira-context.py` + `validate-jira-context.sh`. Re-validates the
+  n8n response's schema/provenance, cross-checks it against the claimed
+  job, re-applies the policy allow-list, and confirms a non-empty stack
+  trace — the second independent judge in the pipeline
+  (`validate-diff.sh` being the first for the code change itself).
+- **`agent-runner/lib/build-agent-prompt.sh`** — updated to read the new
+  `{schemaVersion, source, ticket, incident, approvedAgentContext,
+  contextHash}` response shape instead of the old parsed-Jira-context
+  shape.
+- **`agent-runner/schemas/ticket-context.schema.json`** — replaces
+  `jira-context.schema.json`, documenting the new n8n response shape.
+- **`agent-runner/lib/fetch-jira-context.sh`,
+  `agent-runner/lib/parse-jira-context.py`,
+  `agent-runner/lib/validate-jira-context.sh`** — removed; superseded by
+  the components above.
+- **`infrastructure/n8n/workflows/03-queue-autofix-candidates.json`** —
+  the Policy Gate now stamps `agent_context_source = 'N8N_JIRA_PROXY'`
+  (was `'JIRA_REST'`) when promoting an incident to `AGENT_PENDING`.
+- No new PostgreSQL migration was needed: the columns Stage 6B relies on
+  (`agent_context_source`, `jira_context_fetched_at`, `jira_context_hash`,
+  `agent_next_attempt_at`) were already added by Stage 6's
+  `004-jira-agent-context.sql`. Only the *value* written to
+  `agent_context_source` changed.
+
+### Configuration additions
+
+| Variable | Purpose |
+|---|---|
+| `N8N_TICKET_CONTEXT_WEBHOOK_URL` | Local n8n webhook URL for Workflow 05 (`http://localhost:5678/webhook/autofix/ticket-context`) |
+| `AUTOFIX_RUNNER_WEBHOOK_TOKEN` | Shared secret between the Agent Runner and n8n Workflow 05 (sent as `X-AutoFix-Runner-Token`); generate with `openssl rand -hex 32`. Must match `infrastructure/.env`'s copy exactly. **Not a Jira credential.** |
+| `N8N_CONNECT_TIMEOUT_SECONDS` / `N8N_REQUEST_TIMEOUT_SECONDS` / `N8N_MAX_RETRIES` | Transient-failure retry tuning for `fetch-ticket-context.sh` |
+
+`agent-runner/.env` no longer contains (and must never contain again)
+`JIRA_BASE_URL`, `JIRA_USER_EMAIL`, or `JIRA_API_TOKEN`. See
+`agent-runner/.env.example` for the full list.
+
+### Test results
+
+See
+[`docs/stage6-n8n-jira-context-test-report.md`](docs/stage6-n8n-jira-context-test-report.md)
+for the Stage 6B test report.
+
+## Scope of Stage 6B
+
+Not included at this stage: rotating the shared webhook token
+automatically, rate-limiting the webhook beyond n8n's defaults, and any
+change to Stage 5's no-auto-merge / human-review guarantees.

@@ -110,6 +110,11 @@ services:
       # (e.g. reading available transitions) via {{ $env.JIRA_BASE_URL }}
       # instead of a hardcoded tenant domain.
       JIRA_BASE_URL: ${JIRA_BASE_URL}
+
+      # Stage 6B: shared local secret validated by "05 - Get AutoFix
+      # Ticket Context"'s Validate Request node via {{ $env.AUTOFIX_RUNNER_WEBHOOK_TOKEN }}.
+      # Not a Jira credential -- only authenticates the local Agent Runner.
+      AUTOFIX_RUNNER_WEBHOOK_TOKEN: ${AUTOFIX_RUNNER_WEBHOOK_TOKEN}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
     ports:
       - "127.0.0.1:5678:5678"
