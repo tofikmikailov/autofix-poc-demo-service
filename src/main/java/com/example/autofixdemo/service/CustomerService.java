@@ -18,11 +18,10 @@ public class CustomerService {
         Customer customer = customerRepository.findById(customerId)
                 .orElseThrow(() -> new CustomerNotFoundException(customerId));
 
-        // NOTE: firstName is not null-checked here. Customer "200" has a null
-        // firstName by design, so this call deterministically throws a
-        // NullPointerException. This is the controlled demo error scenario.
-        return customer.firstName().trim()
-                + " "
-                + customer.lastName().trim();
+        // firstName/lastName may legitimately be null for some records; treat
+        // a null value as an empty string instead of throwing an NPE.
+        String firstName = customer.firstName() != null ? customer.firstName().trim() : "";
+        String lastName = customer.lastName() != null ? customer.lastName().trim() : "";
+        return (firstName + " " + lastName).trim();
     }
 }
