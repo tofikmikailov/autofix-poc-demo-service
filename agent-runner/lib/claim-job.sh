@@ -12,16 +12,20 @@
 # runner process that crashed mid-job -- by resetting it back to
 # AGENT_PENDING so it becomes claimable again.
 #
+# Stage 6: this deliberately returns ONLY technical orchestration fields
+# -- no exception/stack-trace/request-path detail. Since Stage 6, Jira is
+# the source of truth for task context: the Agent Runner fetches the live
+# Jira issue itself (fetch-jira-context.sh) instead of trusting a
+# PostgreSQL snapshot that could have gone stale the moment a human
+# edited the ticket.
+#
 # Usage:
 #   claim-job.sh
 #
 # Output:
 #   A single JSON object on stdout describing the claimed incident, e.g.:
-#     {"id":1,"jira_key":"AUTO-3","branch_name":"autofix/AUTO-3",
-#      "exception_type":"...","normalized_exception_message":"...",
-#      "application_stack_frame":"...","sample_request_path":"...",
-#      "sample_http_method":"...","sample_correlation_id":"...",
-#      "sample_stack_trace":"...","agent_attempt_count":1}
+#     {"incidentId":1,"jiraKey":"AUTO-3","fingerprint":"<sha256>",
+#      "branchName":"autofix/AUTO-3","agentAttemptCount":1}
 #   Nothing is printed if there is no AGENT_PENDING job to claim.
 #
 # Exit codes:
@@ -54,9 +58,14 @@ WITH lease_reclaim AS (
     RETURNING id
 ),
 claimable AS (
+    -- Stage 6: agent_next_attempt_at enforces backoff after a transient
+    -- Jira-fetch failure (see fetch-jira-context.sh / mark-incident-failed.sh)
+    -- -- a job whose next-attempt time is still in the future must not
+    -- be claimed early.
     SELECT id
     FROM autofix.incident
     WHERE status = 'AGENT_PENDING'
+      AND (agent_next_attempt_at IS NULL OR agent_next_attempt_at <= NOW())
     ORDER BY created_at
     FOR UPDATE SKIP LOCKED
     LIMIT 1
@@ -71,11 +80,14 @@ claimed AS (
         updated_at = NOW()
     FROM claimable
     WHERE i.id = claimable.id
-    RETURNING i.id, i.jira_key, i.branch_name, i.exception_type,
-              i.normalized_exception_message, i.application_stack_frame,
-              i.sample_request_path, i.sample_http_method,
-              i.sample_correlation_id, i.sample_stack_trace,
-              i.agent_attempt_count
+    -- Stage 6: only technical orchestration fields are returned --
+    -- fingerprint is included so validate-jira-context.sh can confirm the
+    -- live Jira issue embedded context still matches this incident, but
+    -- no exception/message/stack-trace/request-path detail is returned
+    -- here (that is fetched fresh from Jira, never from this snapshot).
+    RETURNING i.id AS "incidentId", i.jira_key AS "jiraKey",
+              i.fingerprint, i.branch_name AS "branchName",
+              i.agent_attempt_count AS "agentAttemptCount"
 )
 SELECT row_to_json(claimed) FROM claimed;
 SQL

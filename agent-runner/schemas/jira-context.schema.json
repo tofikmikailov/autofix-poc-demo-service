@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AutoFix Jira Context",
+  "description": "Stage 6: the normalized, validated task context read directly from a live Jira issue (parse-jira-context.py output, after validate-jira-context.sh has approved it). This -- not any PostgreSQL snapshot -- is what build-agent-prompt.sh renders into the Copilot CLI prompt.",
+  "type": "object",
+  "required": ["key", "summary", "descriptionText", "labels", "status", "projectKey", "autofixContext"],
+  "properties": {
+    "key": {
+      "type": "string",
+      "description": "Jira issue key, e.g. AUTO-3."
+    },
+    "summary": {
+      "type": "string"
+    },
+    "descriptionText": {
+      "type": "string",
+      "description": "Full Jira description, converted from Atlassian Document Format to plain text."
+    },
+    "labels": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "status": {
+      "type": "string",
+      "description": "Current Jira workflow status name (e.g. OPEN). Must not be Done/Closed/Cancelled for the ticket to be eligible."
+    },
+    "issueType": {
+      "type": "string"
+    },
+    "projectKey": {
+      "type": "string",
+      "description": "Must equal AUTO for this POC."
+    },
+    "priority": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "approvedComments": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Only comment bodies beginning with the [AUTOFIX_AGENT_CONTEXT] marker, with the marker stripped. All other Jira comments are untrusted and are never forwarded to Copilot."
+    },
+    "autofixContext": {
+      "description": "Parsed AUTOFIX_CONTEXT_V1 JSON block embedded in the Jira description by Workflow 02, or null if the ticket does not carry one (which validate-jira-context.sh treats as INVALID_JIRA_CONTEXT).",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": [
+            "schemaVersion", "incidentId", "fingerprint", "service",
+            "environment", "exceptionType", "normalizedMessage",
+            "applicationFrame", "requestPath", "stackTrace"
+          ],
+          "properties": {
+            "schemaVersion": { "type": "integer", "const": 1 },
+            "incidentId": { "type": "integer" },
+            "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "service": { "type": "string" },
+            "environment": { "type": "string" },
+            "exceptionType": { "type": "string" },
+            "normalizedMessage": { "type": "string" },
+            "applicationFrame": { "type": "string" },
+            "httpMethod": { "type": "string" },
+            "requestPath": { "type": "string" },
+            "occurrenceCount": { "type": "integer" },
+            "firstSeenAt": { "type": "string" },
+            "lastSeenAt": { "type": "string" },
+            "sampleCorrelationId": { "type": "string" },
+            "stackTrace": {
+              "type": "string",
+              "description": "Truncated to 12000 characters by Workflow 02, with a '...[truncated]' marker appended if the original was longer."
+            }
+          }
+        }
+      ]
+    },
+    "autofixContextError": {
+      "type": "string",
+      "description": "Present only if an AUTOFIX_CONTEXT_V1 block was found but failed to parse as JSON."
+    }
+  },
+  "additionalProperties": false
+}
