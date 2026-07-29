@@ -2,17 +2,24 @@
   "name": "01 - Detect and Deduplicate Elastic Errors",
   "nodes": [
     {
-      "parameters": {},
       "id": "88a4dfdf-ba13-4a36-b35c-745fa9dd4fd1",
       "name": "Manual Trigger",
       "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
       "position": [
         -1120,
         200
-      ]
+      ],
+      "parameters": {},
+      "typeVersion": 1
     },
     {
+      "id": "621b5c9d-18f6-447a-b1ee-4535716a73bc",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        -1120,
+        380
+      ],
       "parameters": {
         "rule": {
           "interval": [
@@ -23,20 +30,25 @@
           ]
         }
       },
-      "id": "621b5c9d-18f6-447a-b1ee-4535716a73bc",
-      "name": "Schedule Trigger",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.2,
-      "position": [
-        -1120,
-        380
-      ]
+      "typeVersion": 1.2
     },
     {
+      "id": "6787e0f1-5ec6-471c-8115-8b766ff853f6",
+      "name": "Search Elasticsearch",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        -880,
+        280
+      ],
       "parameters": {
-        "method": "POST",
         "url": "http://elasticsearch:9200/autofix-demo-logs-*/_search",
+        "method": "POST",
+        "options": {},
+        "jsonBody": "{\n  \"size\": 100,\n  \"track_total_hits\": false,\n  \"_source\": [\n    \"@timestamp\",\n    \"level\",\n    \"service\",\n    \"environment\",\n    \"message\",\n    \"exceptionType\",\n    \"exceptionMessage\",\n    \"stackTrace\",\n    \"correlationId\",\n    \"httpMethod\",\n    \"requestPath\",\n    \"customerId\",\n    \"logger\"\n  ],\n  \"sort\": [\n    {\n      \"@timestamp\": {\n        \"order\": \"asc\"\n      }\n    }\n  ],\n  \"query\": {\n    \"bool\": {\n      \"filter\": [\n        {\n          \"range\": {\n            \"@timestamp\": {\n              \"gte\": \"now-15m\",\n              \"lte\": \"now\"\n            }\n          }\n        },\n        {\n          \"term\": {\n            \"level.keyword\": \"ERROR\"\n          }\n        },\n        {\n          \"term\": {\n            \"service.keyword\": \"autofix-demo-service\"\n          }\n        }\n      ],\n      \"must_not\": [\n        {\n          \"term\": {\n            \"logger.keyword\": \"com.example.autofixdemo.controller.DemoController\"\n          }\n        }\n      ]\n    }\n  }\n}",
+        "sendBody": true,
         "sendQuery": true,
+        "contentType": "json",
+        "specifyBody": "json",
         "queryParameters": {
           "parameters": [
             {
@@ -48,173 +60,161 @@
               "value": "true"
             }
           ]
-        },
-        "sendBody": true,
-        "contentType": "json",
-        "specifyBody": "json",
-        "jsonBody": "{\n  \"size\": 100,\n  \"track_total_hits\": false,\n  \"_source\": [\n    \"@timestamp\",\n    \"level\",\n    \"service\",\n    \"environment\",\n    \"message\",\n    \"exceptionType\",\n    \"exceptionMessage\",\n    \"stackTrace\",\n    \"correlationId\",\n    \"httpMethod\",\n    \"requestPath\",\n    \"customerId\"\n  ],\n  \"sort\": [\n    {\n      \"@timestamp\": {\n        \"order\": \"asc\"\n      }\n    }\n  ],\n  \"query\": {\n    \"bool\": {\n      \"filter\": [\n        {\n          \"range\": {\n            \"@timestamp\": {\n              \"gte\": \"now-15m\",\n              \"lte\": \"now\"\n            }\n          }\n        },\n        {\n          \"term\": {\n            \"level.keyword\": \"ERROR\"\n          }\n        },\n        {\n          \"term\": {\n            \"service.keyword\": \"autofix-demo-service\"\n          }\n        }\n      ]\n    }\n  }\n}",
-        "options": {}
+        }
       },
-      "id": "6787e0f1-5ec6-471c-8115-8b766ff853f6",
-      "name": "Search Elasticsearch",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        -880,
-        280
-      ]
+      "typeVersion": 4.4
     },
     {
+      "id": "2536e784-c5cb-4fa1-9008-acb21555967c",
+      "name": "Split Elasticsearch Hits",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -640,
+        280
+      ],
       "parameters": {
         "mode": "runOnceForAllItems",
         "jsCode": "const response = $input.first().json;\nconst hits = response?.hits?.hits ?? [];\n\nreturn hits.map((hit) => ({\n  json: {\n    elasticsearchId: hit._id,\n    elasticsearchIndex: hit._index,\n    source: hit._source ?? {},\n  },\n}));"
       },
-      "id": "2536e784-c5cb-4fa1-9008-acb21555967c",
-      "name": "Split Elasticsearch Hits",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -640,
-        280
-      ]
+      "typeVersion": 2
     },
     {
+      "id": "8b76e9c9-a698-4cac-80c6-f92a6a41f33e",
+      "name": "Normalize Error",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -400,
+        280
+      ],
       "parameters": {
         "mode": "runOnceForAllItems",
         "jsCode": "const APPLICATION_PACKAGE = 'com.example.autofixdemo.';\n\nfunction asString(value, fallback = '') {\n  if (value === null || value === undefined) {\n    return fallback;\n  }\n\n  if (typeof value === 'string') {\n    return value;\n  }\n\n  return JSON.stringify(value);\n}\n\nfunction normalizeExceptionMessage(message) {\n  return asString(message, 'unknown exception')\n    // UUID\n    .replace(\n      /\\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\b/gi,\n      '<uuid>',\n    )\n    // ISO timestamp\n    .replace(\n      /\\b\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z\\b/gi,\n      '<timestamp>',\n    )\n    // Long numeric identifiers\n    .replace(/\\b\\d{4,}\\b/g, '<number>')\n    // Multiple whitespace characters\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .toLowerCase();\n}\n\nfunction extractApplicationStackFrame(stackTrace) {\n  const lines = asString(stackTrace)\n    .split('\\n')\n    .map((line) => line.trim())\n    .filter(Boolean);\n\n  const applicationFrame = lines.find((line) =>\n    line.includes(APPLICATION_PACKAGE),\n  );\n\n  if (!applicationFrame) {\n    return '<no-application-frame>';\n  }\n\n  return applicationFrame\n    // Line numbers must not change the fingerprint\n    .replace(/:\\d+\\)/g, ':<line>)')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nreturn $input.all().map((item) => {\n  const source = item.json.source ?? {};\n\n  const serviceName = asString(\n    source.service,\n    'autofix-demo-service',\n  );\n\n  const environment = asString(\n    source.environment,\n    'local',\n  );\n\n  const exceptionType = asString(\n    source.exceptionType ?? source.error?.type,\n    'unknown-exception',\n  );\n\n  const exceptionMessage = asString(\n    source.exceptionMessage ?? source.message,\n    'unknown exception',\n  );\n\n  const stackTrace = asString(\n    source.stackTrace ?? source.stack_trace,\n  );\n\n  const requestPath = asString(source.requestPath);\n  const httpMethod = asString(source.httpMethod);\n  const correlationId = asString(source.correlationId);\n\n  const normalizedExceptionMessage =\n    normalizeExceptionMessage(exceptionMessage);\n\n  const applicationStackFrame =\n    extractApplicationStackFrame(stackTrace);\n\n  /*\n   * Same logical error should produce the same input even when:\n   * - correlation ID changes;\n   * - customer ID changes;\n   * - stack-trace line number changes;\n   * - timestamp changes.\n   */\n  const fingerprintInput = [\n    serviceName,\n    environment,\n    exceptionType,\n    normalizedExceptionMessage,\n    applicationStackFrame,\n    requestPath,\n  ].join('|');\n\n  return {\n    json: {\n      elasticsearchId: item.json.elasticsearchId,\n      elasticsearchIndex: item.json.elasticsearchIndex,\n\n      timestamp:\n        source['@timestamp'] ?? new Date().toISOString(),\n\n      serviceName,\n      environment,\n      exceptionType,\n      exceptionMessage,\n      normalizedExceptionMessage,\n      applicationStackFrame,\n\n      correlationId,\n      httpMethod,\n      requestPath,\n      customerId: asString(source.customerId),\n\n      stackTrace,\n      fingerprintInput,\n    },\n  };\n});"
       },
-      "id": "8b76e9c9-a698-4cac-80c6-f92a6a41f33e",
-      "name": "Normalize Error",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -400,
-        280
-      ]
+      "typeVersion": 2
     },
     {
-      "parameters": {
-        "action": "hash",
-        "type": "SHA256",
-        "value": "={{ $json.fingerprintInput }}",
-        "dataPropertyName": "fingerprint",
-        "encoding": "hex"
-      },
       "id": "45f7e1e6-ceec-4438-96a7-3c3182d751e3",
       "name": "Calculate Fingerprint",
       "type": "n8n-nodes-base.crypto",
-      "typeVersion": 2,
       "position": [
         -160,
         280
-      ]
+      ],
+      "parameters": {
+        "type": "SHA256",
+        "value": "={{ $json.fingerprintInput }}",
+        "action": "hash",
+        "encoding": "hex",
+        "dataPropertyName": "fingerprint"
+      },
+      "typeVersion": 2
     },
     {
-      "parameters": {
-        "resource": "database",
-        "operation": "executeQuery",
-        "query": "WITH claimed_event AS (\n    INSERT INTO autofix.processed_log_event (\n        elasticsearch_id,\n        elasticsearch_index,\n        correlation_id\n    )\n    VALUES (\n        $1,\n        $2,\n        NULLIF($3, '')\n    )\n    ON CONFLICT (elasticsearch_id) DO NOTHING\n    RETURNING elasticsearch_id\n),\nupserted_incident AS (\n    INSERT INTO autofix.incident (\n        fingerprint,\n        service_name,\n        environment,\n        exception_type,\n        normalized_exception_message,\n        application_stack_frame,\n\n        first_seen_at,\n        last_seen_at,\n        occurrence_count,\n\n        first_elasticsearch_id,\n        last_elasticsearch_id,\n\n        sample_correlation_id,\n        sample_request_path,\n        sample_http_method,\n        sample_stack_trace,\n\n        status\n    )\n    SELECT\n        $4,\n        $5,\n        $6,\n        $7,\n        $8,\n        $9,\n\n        $10::timestamptz,\n        $10::timestamptz,\n        1,\n\n        $1,\n        $1,\n\n        NULLIF($3, ''),\n        NULLIF($11, ''),\n        NULLIF($12, ''),\n        NULLIF($13, ''),\n\n        'DETECTED'\n    FROM claimed_event\n\n    ON CONFLICT (fingerprint)\n    DO UPDATE SET\n        last_seen_at = GREATEST(\n            autofix.incident.last_seen_at,\n            EXCLUDED.last_seen_at\n        ),\n\n        occurrence_count =\n            autofix.incident.occurrence_count + 1,\n\n        last_elasticsearch_id =\n            EXCLUDED.last_elasticsearch_id,\n\n        sample_correlation_id = COALESCE(\n            EXCLUDED.sample_correlation_id,\n            autofix.incident.sample_correlation_id\n        ),\n\n        sample_request_path = COALESCE(\n            EXCLUDED.sample_request_path,\n            autofix.incident.sample_request_path\n        ),\n\n        sample_http_method = COALESCE(\n            EXCLUDED.sample_http_method,\n            autofix.incident.sample_http_method\n        ),\n\n        sample_stack_trace = COALESCE(\n            EXCLUDED.sample_stack_trace,\n            autofix.incident.sample_stack_trace\n        ),\n\n        updated_at = NOW()\n\n    RETURNING\n        id,\n        fingerprint,\n        service_name,\n        environment,\n        exception_type,\n        occurrence_count,\n        status,\n        jira_key,\n        pull_request_url,\n        occurrence_count = 1 AS is_new_incident\n)\nSELECT\n    *,\n    TRUE AS processed_now\nFROM upserted_incident;",
-        "options": {
-          "queryReplacement": "={{ [ $json.elasticsearchId, $json.elasticsearchIndex, $json.correlationId, $json.fingerprint, $json.serviceName, $json.environment, $json.exceptionType, $json.normalizedExceptionMessage, $json.applicationStackFrame, $json.timestamp, $json.requestPath, $json.httpMethod, $json.stackTrace ] }}",
-          "queryBatching": "independently"
-        }
-      },
       "id": "9b06e27a-c92b-44ef-b3ba-f14b6d971951",
       "name": "Claim & Upsert Incident",
       "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
       "position": [
         80,
         280
       ],
+      "parameters": {
+        "query": "WITH claimed_event AS (\n    INSERT INTO autofix.processed_log_event (\n        elasticsearch_id,\n        elasticsearch_index,\n        correlation_id\n    )\n    VALUES (\n        $1,\n        $2,\n        NULLIF($3, '')\n    )\n    ON CONFLICT (elasticsearch_id) DO NOTHING\n    RETURNING elasticsearch_id\n),\nupserted_incident AS (\n    INSERT INTO autofix.incident (\n        fingerprint,\n        service_name,\n        environment,\n        exception_type,\n        normalized_exception_message,\n        application_stack_frame,\n\n        first_seen_at,\n        last_seen_at,\n        occurrence_count,\n\n        first_elasticsearch_id,\n        last_elasticsearch_id,\n\n        sample_correlation_id,\n        sample_request_path,\n        sample_http_method,\n        sample_stack_trace,\n\n        status\n    )\n    SELECT\n        $4,\n        $5,\n        $6,\n        $7,\n        $8,\n        $9,\n\n        $10::timestamptz,\n        $10::timestamptz,\n        1,\n\n        $1,\n        $1,\n\n        NULLIF($3, ''),\n        NULLIF($11, ''),\n        NULLIF($12, ''),\n        NULLIF($13, ''),\n\n        'DETECTED'\n    FROM claimed_event\n\n    ON CONFLICT (fingerprint)\n    DO UPDATE SET\n        last_seen_at = GREATEST(\n            autofix.incident.last_seen_at,\n            EXCLUDED.last_seen_at\n        ),\n\n        occurrence_count =\n            autofix.incident.occurrence_count + 1,\n\n        last_elasticsearch_id =\n            EXCLUDED.last_elasticsearch_id,\n\n        sample_correlation_id = COALESCE(\n            EXCLUDED.sample_correlation_id,\n            autofix.incident.sample_correlation_id\n        ),\n\n        sample_request_path = COALESCE(\n            EXCLUDED.sample_request_path,\n            autofix.incident.sample_request_path\n        ),\n\n        sample_http_method = COALESCE(\n            EXCLUDED.sample_http_method,\n            autofix.incident.sample_http_method\n        ),\n\n        sample_stack_trace = COALESCE(\n            EXCLUDED.sample_stack_trace,\n            autofix.incident.sample_stack_trace\n        ),\n\n        updated_at = NOW()\n\n    RETURNING\n        id,\n        fingerprint,\n        service_name,\n        environment,\n        exception_type,\n        occurrence_count,\n        status,\n        jira_key,\n        pull_request_url,\n        occurrence_count = 1 AS is_new_incident\n)\nSELECT\n    *,\n    TRUE AS processed_now\nFROM upserted_incident;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.elasticsearchId, $json.elasticsearchIndex, $json.correlationId, $json.fingerprint, $json.serviceName, $json.environment, $json.exceptionType, $json.normalizedExceptionMessage, $json.applicationStackFrame, $json.timestamp, $json.requestPath, $json.httpMethod, $json.stackTrace ] }}"
+        },
+        "resource": "database",
+        "operation": "executeQuery"
+      },
       "credentials": {
         "postgres": {
           "id": "TR5zuiuRo771ypgT",
           "name": "Postgres account"
         }
-      }
+      },
+      "typeVersion": 2.6
     },
     {
+      "id": "4a79293d-34cc-44fb-ad28-e43b2a5829fa",
+      "name": "Is New Incident?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        320,
+        280
+      ],
       "parameters": {
+        "options": {},
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "version": 2,
             "leftValue": "",
-            "typeValidation": "strict",
-            "version": 2
+            "caseSensitive": true,
+            "typeValidation": "strict"
           },
+          "combinator": "and",
           "conditions": [
             {
               "id": "7275775f-2384-4dd4-b87c-24886b6e4896",
-              "leftValue": "={{ $json.is_new_incident }}",
-              "rightValue": "",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
                 "singleValue": true
-              }
+              },
+              "leftValue": "={{ $json.is_new_incident }}",
+              "rightValue": ""
             }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
+          ]
+        }
       },
-      "id": "4a79293d-34cc-44fb-ad28-e43b2a5829fa",
-      "name": "Is New Incident?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [
-        320,
-        280
-      ]
+      "typeVersion": 2.3
     },
     {
+      "id": "e8b8d9d9-ce79-457c-ac9d-32d1ab200009",
+      "name": "New Incident",
+      "type": "n8n-nodes-base.set",
+      "position": [
+        560,
+        160
+      ],
       "parameters": {
         "mode": "manual",
+        "options": {},
         "assignments": {
           "assignments": [
             {
               "id": "c4b030b8-41a8-4408-b993-97d7830b0754",
               "name": "classification",
-              "value": "NEW_INCIDENT",
-              "type": "string"
+              "type": "string",
+              "value": "NEW_INCIDENT"
             }
           ]
-        },
-        "options": {}
+        }
       },
-      "id": "e8b8d9d9-ce79-457c-ac9d-32d1ab200009",
-      "name": "New Incident",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [
-        560,
-        160
-      ]
+      "typeVersion": 3.4
     },
     {
+      "id": "de17020e-894a-4883-a533-1163189db2be",
+      "name": "Existing Incident",
+      "type": "n8n-nodes-base.set",
+      "position": [
+        560,
+        400
+      ],
       "parameters": {
         "mode": "manual",
+        "options": {},
         "assignments": {
           "assignments": [
             {
               "id": "bac72082-a9cf-47e1-836e-697a9ab79ff4",
               "name": "classification",
-              "value": "EXISTING_INCIDENT",
-              "type": "string"
+              "type": "string",
+              "value": "EXISTING_INCIDENT"
             }
           ]
-        },
-        "options": {}
+        }
       },
-      "id": "de17020e-894a-4883-a533-1163189db2be",
-      "name": "Existing Incident",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [
-        560,
-        400
-      ]
+      "typeVersion": 3.4
     }
   ],
   "connections": {
@@ -317,7 +317,16 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "staticData": null,
+  "staticData": {
+    "node:Schedule Trigger": {
+      "recurrenceRules": [
+        null
+      ],
+      "recurrenceRuleSignatures": [
+        null
+      ]
+    }
+  },
   "pinData": null,
-  "active": false
+  "active": true
 }

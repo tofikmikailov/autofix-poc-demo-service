@@ -178,6 +178,30 @@ docker exec autofix-n8n n8n import:workflow --input=/tmp/workflow.json
     fingerprint definition above — request path is intentionally part of
     the fingerprint — not a workflow defect.
 
+### Excluding the technical bulk-generation endpoint
+
+`POST /api/demo/generate-errors` is a test-only endpoint for exercising
+deduplication (Test C). Its errors should never become real incidents once
+Jira ticket creation is wired up, so the **Search Elasticsearch** query
+excludes them with a `must_not` clause:
+
+```json
+"must_not": [
+  { "term": { "logger.keyword": "com.example.autofixdemo.controller.DemoController" } }
+]
+```
+
+Note this filters on `logger`, not `requestPath`: the bulk endpoint's log
+entries never populate `requestPath` at all (it's an empty field, not the
+literal string `/api/demo/generate-errors`), so a `requestPath.keyword`
+filter would silently do nothing. `logger` reliably distinguishes the
+technical endpoint (`DemoController`) from the real business error path
+(`GlobalExceptionHandler`), which does set `requestPath`.
+
+Verified: after adding the filter, generating bulk errors no longer creates
+`processed_log_event`/`incident` rows, while errors from
+`/api/customers/{id}/display-name` continue to be captured normally.
+
 ### Activating the schedule
 
 n8n 2.x tracks trigger activation through its own workflow-publication
