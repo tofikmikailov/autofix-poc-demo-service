@@ -335,8 +335,135 @@ edits do not reliably (de)register n8n's schedule trigger in this
 version). Workflow 02 runs once a minute, independently of workflow 01, so
 Jira outages never block error ingestion into `autofix.incident`.
 
+## Stage 5: Local AutoFix Agent Runner and Jira review workflow
+
+Stage 5 automates the segment of the pipeline between a triaged Jira
+incident and a human-reviewable Draft Pull Request. Nothing merges
+automatically and Copilot CLI never has direct access to Jira, GitHub, or
+any MCP server.
+
+```
+Jira ticket (JIRA_CREATED)
+        ↓
+Policy Gate (Workflow 03)
+        ↓
+Host Agent Runner (claim → worktree → Copilot CLI → validation)
+        ↓
+branch + commit + push
+        ↓
+Draft Pull Request
+        ↓
+Jira comment + transition to REVIEW (Workflow 04)
+        ↓
+Human code review
+```
+
+### Components
+
+- **`agent-runner/`** — a local Bash + `jq` + `psql` orchestrator that runs
+  on a developer machine (where Copilot CLI, `git`, `gh`, and repository
+  credentials already live). Entry point: `agent-runner/run-once.sh`.
+  Library scripts in `agent-runner/lib/` implement each stage:
+  `claim-job.sh`, `prepare-worktree.sh`, `run-copilot.sh`,
+  `validate-diff.sh`, `create-pr.sh`, `report-result.sh`.
+- **`infrastructure/postgres/init/003-agent-processing.sql`** — adds the
+  AutoFix processing state machine to `autofix.incident`
+  (`AGENT_PENDING` → `AGENT_RUNNING` → `PR_READY` → `REVIEW`, with
+  `HUMAN_REQUIRED`/`AGENT_FAILED` as terminal failure states), plus
+  `branch_name`, `agent_attempt_count`, `agent_claimed_at`,
+  `agent_started_at`, `agent_completed_at`, `agent_last_error`, and a
+  `agent_result` JSONB summary column. The migration is safe to re-run
+  against an existing database.
+- **`infrastructure/n8n/workflows/03-queue-autofix-candidates.json`** — a
+  Policy Gate: promotes an eligible `JIRA_CREATED` incident to
+  `AGENT_PENDING`, or routes it to `HUMAN_REQUIRED` with a recorded
+  rejection reason. Only a narrow, hard-coded class of incidents is
+  auto-eligible; entire categories (auth, payments, infrastructure,
+  database migrations, dependency upgrades, secrets, etc.) are always
+  excluded.
+- **`infrastructure/n8n/workflows/04-finalize-autofix-review.json`** —
+  receives the runner's PR-ready callback (`POST
+  /webhook/autofix/pr-ready`), adds an idempotent Jira comment containing
+  the PR link (guarded by a `[autofix-pr:<jira-key>]` marker), transitions
+  the Jira issue to `REVIEW` (looked up by target status name, not a
+  hard-coded transition ID), and updates the incident's orchestration
+  state in PostgreSQL.
+
+### Agent Runner pipeline
+
+```
+claim-job.sh       AGENT_PENDING → AGENT_RUNNING (FOR UPDATE SKIP LOCKED, atomic)
+prepare-worktree.sh  isolated `git worktree` on branch autofix/<JIRA-KEY>
+run-copilot.sh      Copilot CLI, non-interactive (-p), restricted tool
+                    allow-list, --disable-builtin-mcps: no git/gh/curl/
+                    ssh/kubectl/docker/psql, no Jira or GitHub access
+validate-diff.sh    independent Validation Gate (see below)
+create-pr.sh        commit + push + idempotent Draft PR (found by branch
+                    name via `gh pr list --head`, or created via
+                    `gh pr create --draft`)
+report-result.sh    POST result to n8n Workflow 04
+```
+
+### Validation Gate
+
+The runner never trusts Copilot's own "tests passed" claim. Before any
+commit, push, or PR is created it independently verifies:
+
+1. A non-empty diff exists.
+2. Only allowed paths were touched (`src/main/java/**`, `src/test/java/**`,
+   optionally `README.md`); infrastructure, build, and config files are
+   rejected.
+3. Diff size limits (files changed, lines changed, production classes
+   touched).
+4. At least one test file was changed (a regression test is mandatory).
+5. No disallowed constructs appear in the diff (`@Disabled`, `skipTests`,
+   `-x test`, `System.exit`, `Thread.sleep`, ignored exception catches,
+   etc.).
+6. The full test suite (`./gradlew clean test`) passes independently of
+   Copilot's own run.
+
+Only the runner decides `PASS` (commit/push/PR) or `FAIL`
+(`HUMAN_REQUIRED` / `AGENT_FAILED`).
+
+### Configuration
+
+All host-specific values are supplied via environment variables — no
+paths, hostnames, or credentials are hard-coded in the committed scripts
+or workflows:
+
+| Variable | Purpose |
+|---|---|
+| `AUTOFIX_REPO` | Path to the local clone of this repository |
+| `AUTOFIX_BASE_BRANCH` | Base branch for worktrees/PRs (default `main`) |
+| `AUTOFIX_ROOT` | Runtime directory for worktrees, logs, results, locks |
+| `DATABASE_URL` / `PGHOST` / `PGPORT` / `PGUSER` / `PGDATABASE` | Postgres connection |
+| `N8N_RESULT_WEBHOOK_URL` | n8n Workflow 04 callback (`/webhook/autofix/pr-ready`) |
+| `JIRA_BASE_URL` | Jira Cloud tenant base URL (used by n8n workflow 04) |
+
+### Running the agent runner
+
+```bash
+export AUTOFIX_REPO=/path/to/autofix-poc-demo-service
+export AUTOFIX_BASE_BRANCH=main
+export AUTOFIX_ROOT=~/autofix-poc
+export PGHOST=localhost PGPORT=5432 PGUSER=... PGDATABASE=...
+export N8N_RESULT_WEBHOOK_URL=http://localhost:5678/webhook/autofix/pr-ready
+
+./agent-runner/run-once.sh
+```
+
+Re-running the script is safe: it reconciles against any existing branch
+or Draft PR instead of duplicating work.
+
+### Test results
+
+See [`docs/stage5-test-report.md`](docs/stage5-test-report.md) for the
+full Stage 5 end-to-end test report (successful flow, idempotent re-run,
+interrupted-after-PR recovery, Jira-unavailable recovery, failing-tests
+rejection, and forbidden-diff rejection).
+
 ## Scope of this stage
 
-Not included at this stage: database, Kafka, Kubernetes, authentication,
-automated fixing, automated Pull Request creation, and automated
-deployment. These will be added in later POC stages.
+Not included at this stage: automatic merge, automatic deployment, direct
+push to `main`, and Copilot CLI access to Jira, GitHub, Kubernetes, or
+Docker. A human always reviews and merges the Draft Pull Request.

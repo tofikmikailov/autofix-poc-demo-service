@@ -1,0 +1,720 @@
+{
+  "active": true,
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Payload": {
+      "main": [
+        [
+          {
+            "node": "Payload Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload Valid?": {
+      "main": [
+        [
+          {
+            "node": "Verify Incident PR_READY",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Incident PR_READY": {
+      "main": [
+        [
+          {
+            "node": "Incident Is PR_READY?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Incident Is PR_READY?": {
+      "main": [
+        [
+          {
+            "node": "Get Jira Issue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Not PR_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Jira Issue": {
+      "main": [
+        [
+          {
+            "node": "Get Jira Comments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Jira Comments": {
+      "main": [
+        [
+          {
+            "node": "Detect AutoFix Comment Marker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect AutoFix Comment Marker": {
+      "main": [
+        [
+          {
+            "node": "Comment Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Comment Exists?": {
+      "main": [
+        [
+          {
+            "node": "Read Jira Transitions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add AutoFix PR Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add AutoFix PR Comment": {
+      "main": [
+        [
+          {
+            "node": "Read Jira Transitions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Jira Transitions": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Jira Transition",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Jira Transition": {
+      "main": [
+        [
+          {
+            "node": "Already REVIEW?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already REVIEW?": {
+      "main": [
+        [
+          {
+            "node": "Update Incident To REVIEW",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Transition Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transition Available?": {
+      "main": [
+        [
+          {
+            "node": "Execute Jira Transition",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Incident HUMAN_REQUIRED (No Transition)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Jira Transition": {
+      "main": [
+        [
+          {
+            "node": "Update Incident To REVIEW",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Incident To REVIEW": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Incident HUMAN_REQUIRED (No Transition)": {
+      "main": [
+        [
+          {
+            "node": "Respond No Transition Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "04 - Finalize AutoFix Review",
+  "nodes": [
+    {
+      "id": "n04-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        -1600,
+        400
+      ],
+      "webhookId": "autofix-pr-ready",
+      "parameters": {
+        "path": "autofix/pr-ready",
+        "options": {},
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n04-validate-payload",
+      "name": "Validate Payload",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -1360,
+        400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $json.body ?? $json;\n\nconst requiredFields = [\n  'incidentId', 'jiraKey', 'branchName', 'pullRequestNumber',\n  'pullRequestUrl', 'commitSha', 'testsPassed', 'changedFiles',\n  'addedLines', 'deletedLines',\n];\n\nconst errors = [];\nfor (const field of requiredFields) {\n  if (body[field] === undefined || body[field] === null || body[field] === '') {\n    errors.push(`missing field: ${field}`);\n  }\n}\n\nif (body.jiraKey !== undefined && typeof body.jiraKey !== 'string') {\n  errors.push('jiraKey must be a string');\n}\n\nreturn {\n  json: {\n    valid: errors.length === 0,\n    errors,\n    incidentId: body.incidentId,\n    jiraKey: body.jiraKey,\n    branchName: body.branchName,\n    pullRequestNumber: body.pullRequestNumber,\n    pullRequestUrl: body.pullRequestUrl,\n    commitSha: body.commitSha,\n    testsPassed: body.testsPassed,\n    changedFiles: body.changedFiles,\n    addedLines: body.addedLines,\n    deletedLines: body.deletedLines,\n    marker: body.jiraKey ? `[autofix-pr:${body.jiraKey}]` : null,\n  },\n};\n"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n04-payload-valid",
+      "name": "Payload Valid?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        -1120,
+        400
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n04-cond-valid",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true
+            }
+          ]
+        }
+      },
+      "typeVersion": 2.3
+    },
+    {
+      "id": "n04-respond-invalid",
+      "name": "Respond Invalid Payload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        -880,
+        560
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 400
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"invalid payload\", \"details\": $json.errors } }}"
+      },
+      "typeVersion": 1.4
+    },
+    {
+      "id": "n04-verify-pr-ready",
+      "name": "Verify Incident PR_READY",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        -880,
+        260
+      ],
+      "parameters": {
+        "query": "SELECT id, status, jira_key, branch_name\nFROM autofix.incident\nWHERE id = $1\n  AND jira_key = $2\n  AND status = 'PR_READY';",
+        "options": {
+          "queryReplacement": "={{ [ $json.incidentId, $json.jiraKey ] }}"
+        },
+        "operation": "executeQuery"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      },
+      "typeVersion": 2.6,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "n04-incident-pr-ready",
+      "name": "Incident Is PR_READY?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        -640,
+        260
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n04-cond-pr-ready",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "PR_READY"
+            }
+          ]
+        }
+      },
+      "typeVersion": 2.3
+    },
+    {
+      "id": "n04-respond-not-ready",
+      "name": "Respond Not PR_READY",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        -400,
+        420
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 409
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"incident is not PR_READY\", \"incidentId\": $('Validate Payload').first().json.incidentId } }}"
+      },
+      "typeVersion": 1.4
+    },
+    {
+      "id": "n04-get-jira-issue",
+      "name": "Get Jira Issue",
+      "type": "n8n-nodes-base.jira",
+      "position": [
+        -400,
+        140
+      ],
+      "parameters": {
+        "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
+        "resource": "issue",
+        "operation": "get",
+        "jiraVersion": "cloud"
+      },
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "n04-get-jira-comments",
+      "name": "Get Jira Comments",
+      "type": "n8n-nodes-base.jira",
+      "position": [
+        -160,
+        140
+      ],
+      "parameters": {
+        "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
+        "resource": "issueComment",
+        "operation": "getAll",
+        "returnAll": true,
+        "jiraVersion": "cloud"
+      },
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      },
+      "typeVersion": 1,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "n04-detect-marker",
+      "name": "Detect AutoFix Comment Marker",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        80,
+        140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const payload = $('Validate Payload').first().json;\nconst marker = payload.marker;\n\nfunction extractText(node) {\n  if (!node) return '';\n  if (typeof node === 'string') return node;\n  let text = '';\n  if (node.type === 'text' && typeof node.text === 'string') {\n    text += node.text;\n  }\n  if (Array.isArray(node.content)) {\n    for (const child of node.content) {\n      text += extractText(child) + '\\n';\n    }\n  }\n  return text;\n}\n\nconst commentItems = $input.all();\nconst commentExists = commentItems.some((item) => {\n  const body = item.json.body;\n  const plainText = typeof body === 'string' ? body : extractText(body);\n  return plainText.includes(marker);\n});\n\nreturn {\n  json: {\n    ...payload,\n    commentExists,\n  },\n};\n"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n04-comment-exists",
+      "name": "Comment Exists?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        320,
+        140
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n04-cond-comment-exists",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.commentExists }}",
+              "rightValue": true
+            }
+          ]
+        }
+      },
+      "typeVersion": 2.3
+    },
+    {
+      "id": "n04-add-comment",
+      "name": "Add AutoFix PR Comment",
+      "type": "n8n-nodes-base.jira",
+      "position": [
+        560,
+        220
+      ],
+      "parameters": {
+        "comment": "=[autofix-pr:{{ $('Validate Payload').first().json.jiraKey }}]\n\nAutoFix created a Draft Pull Request:\n\n{{ $('Validate Payload').first().json.pullRequestUrl }}\n\nValidation:\n- Regression test added\n- ./gradlew clean test: {{ $('Validate Payload').first().json.testsPassed ? 'PASSED' : 'FAILED' }}\n- Changed files: {{ $('Validate Payload').first().json.changedFiles }}\n- Risk classification: LOW\n\nAutomatic merge is disabled. Human review is required.",
+        "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
+        "resource": "issueComment",
+        "operation": "add",
+        "jiraVersion": "cloud"
+      },
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "n04-read-transitions",
+      "name": "Read Jira Transitions",
+      "type": "n8n-nodes-base.jira",
+      "position": [
+        800,
+        140
+      ],
+      "parameters": {
+        "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
+        "resource": "issue",
+        "operation": "transitions",
+        "jiraVersion": "cloud"
+      },
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      },
+      "typeVersion": 1,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "n04-evaluate-transition",
+      "name": "Evaluate Jira Transition",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1040,
+        140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Jira Cloud localizes status names (this instance's REVIEW-equivalent\n// status is named \"\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u043a\\u0430\" / \"Review\" in Russian, id 10010,\n// and the transition itself is named lower-case \"review\", id 2 -- see\n// Stage 5A verification). Match on both the transition name and its\n// target status name, case-insensitively, against every alias we know\n// of, rather than assuming a single literal English string.\nconst REVIEW_ALIASES = ['review', 'in review', 'code review', '\\u043f\\u0440\\u043e\\u0432\\u0435\\u0440\\u043a\\u0430'];\n\nfunction isReviewName(name) {\n  return typeof name === 'string' && REVIEW_ALIASES.includes(name.trim().toLowerCase());\n}\n\nconst payload = $('Validate Payload').first().json;\nconst currentStatus = $('Get Jira Issue').first().json.fields.status;\n\nconst transitions = $input.all().map((item) => item.json);\nconst match = transitions.find(\n  (t) => isReviewName(t.name) || isReviewName(t.to && t.to.name)\n);\n\nreturn {\n  json: {\n    ...payload,\n    currentStatusName: currentStatus.name,\n    currentStatusId: currentStatus.id,\n    alreadyReview: isReviewName(currentStatus.name),\n    transitionId: match ? match.id : null,\n    transitionName: match ? match.name : null,\n    targetStatusName: match ? match.to.name : null,\n  },\n};\n"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n04-already-review",
+      "name": "Already REVIEW?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        1280,
+        140
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n04-cond-already-review",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.alreadyReview }}",
+              "rightValue": true
+            }
+          ]
+        }
+      },
+      "typeVersion": 2.3
+    },
+    {
+      "id": "n04-transition-available",
+      "name": "Transition Available?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        1520,
+        260
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n04-cond-transition-available",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.transitionId }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      },
+      "typeVersion": 2.3
+    },
+    {
+      "id": "n04-respond-no-transition",
+      "name": "Respond No Transition Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        1760,
+        460
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 422
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"no REVIEW transition available\", \"jiraKey\": $json.jiraKey, \"currentStatusName\": $json.currentStatusName, \"incidentStatus\": \"HUMAN_REQUIRED\" } }}"
+      },
+      "typeVersion": 1.4
+    },
+    {
+      "id": "n04-execute-transition",
+      "name": "Execute Jira Transition",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1760,
+        140
+      ],
+      "parameters": {
+        "url": "={{ $env.JIRA_BASE_URL }}/rest/api/3/issue/{{ $json.jiraKey }}/transitions",
+        "method": "POST",
+        "options": {},
+        "jsonBody": "={{ { \"transition\": { \"id\": $json.transitionId } } }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "jiraSoftwareCloudApi"
+      },
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      },
+      "typeVersion": 4.2
+    },
+    {
+      "id": "n04-update-review",
+      "name": "Update Incident To REVIEW",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        2000,
+        140
+      ],
+      "parameters": {
+        "query": "UPDATE autofix.incident\nSET\n    status = 'REVIEW',\n    agent_completed_at = NOW(),\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key = $2\nRETURNING id, status, jira_key, branch_name;",
+        "options": {
+          "queryReplacement": "={{ [ $('Validate Payload').first().json.incidentId, $('Validate Payload').first().json.jiraKey ] }}"
+        },
+        "operation": "executeQuery"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      },
+      "typeVersion": 2.6
+    },
+    {
+      "id": "n04-respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        2240,
+        140
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        },
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "typeVersion": 1.4
+    },
+    {
+      "id": "n04-set-human-required-no-transition",
+      "name": "Set Incident HUMAN_REQUIRED (No Transition)",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        1520,
+        460
+      ],
+      "parameters": {
+        "query": "UPDATE autofix.incident\nSET\n    status = 'HUMAN_REQUIRED',\n    agent_last_error = $3,\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key = $2\nRETURNING id, status, jira_key, agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $('Validate Payload').first().json.incidentId, $json.jiraKey, 'NO_REVIEW_TRANSITION: no transition to REVIEW-equivalent status available from current status ' + $json.currentStatusName + ' -- PR/comment already posted, manual Jira transition required' ] }}"
+        },
+        "operation": "executeQuery"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      },
+      "typeVersion": 2.6
+    }
+  ],
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": null
+}

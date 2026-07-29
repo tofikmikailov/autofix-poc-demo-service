@@ -45,3 +45,11 @@ logs/
 
 # Stage 3: local secrets, never commit
 infrastructure/.env
+
+# Stage 5: Agent Runner local/runtime data, never commit
+agent-runner/.env
+agent-runner/logs/
+agent-runner/results/
+agent-runner/worktrees/
+agent-runner/locks/
+agent-runner/*.pid
