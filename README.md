@@ -219,8 +219,124 @@ single n8n instance. A persistent cursor (`search_after` / last-seen
 timestamp) will replace the overlapping time-window approach in a later
 stage.
 
+## Stage 4B: Publishing incidents to Jira
+
+A second, independent n8n workflow
+(`infrastructure/n8n/workflows/02-publish-incidents-to-jira.json`) claims
+`DETECTED` incidents and publishes them to Jira Cloud (project `AUTO`) as
+issues, with effectively-once delivery even across transient Jira
+failures. It is deliberately **not** merged into workflow 01: if Jira is
+temporarily unavailable, an incident must stay claimable rather than being
+marked "already handled".
+
+```
+01 - Detect and Deduplicate Elastic Errors
+                    ↓
+          PostgreSQL incident (DETECTED)
+                    ↓
+02 - Publish Incidents to Jira
+                    ↓
+               AUTO-<n>
+```
+
+### Workflow 02 pipeline
+
+```
+Manual Trigger ─┐
+Schedule Trigger┴→ Claim Jira Incident (Postgres, FOR UPDATE SKIP LOCKED)
+                          ↓
+                  Incident Claimed? (IF: $json.id exists)
+                   ├── false → stop (nothing to publish)
+                   └── true
+                          ↓
+                  Prepare Jira Payload (Code: summary/description/labels)
+                          ↓
+                  Search Jira by Fingerprint (JQL on autofix-fp-<hash> label)
+                          ↓
+                  Jira Ticket Exists? (IF: $json.key exists)
+                   ├── true  → Link Existing Jira (Postgres)
+                   └── false → Create Jira Issue (Jira) → Link Created Jira (Postgres)
+```
+
+### Lifecycle states
+
+```
+DETECTED → JIRA_PENDING → JIRA_CREATED
+                ↓ (lease expires after 10 min)
+          reclaimed → Search Jira by fingerprint → JIRA_CREATED
+```
+
+`Claim Jira Incident` atomically selects one incident (`DETECTED`,
+`JIRA_FAILED`, or a `JIRA_PENDING` row whose `jira_claimed_at` is older
+than 10 minutes — a stale lease) and flips it to `JIRA_PENDING`,
+incrementing `jira_attempt_count`. `FOR UPDATE SKIP LOCKED` guarantees two
+concurrent executions never claim the same row. If the Jira nodes fail
+(no `Continue On Fail`), the execution errors out and the incident is left
+in `JIRA_PENDING` — safely reclaimable after the lease expires.
+
+Every publish attempt searches Jira by the exact fingerprint label
+(`autofix-fp-<sha256>`) *before* creating an issue. This makes ticket
+creation effectively-once: even if Jira successfully creates an issue but
+n8n never receives the response (network/timeout), the next attempt finds
+the existing ticket by fingerprint and links it instead of creating a
+duplicate.
+
+### Migration
+
+`infrastructure/postgres/init/002-jira-publishing.sql` extends the
+`incident` table for this lifecycle: new status values
+(`JIRA_PENDING`/`JIRA_FAILED`/`AGENT_*`/`PR_CREATED`/`HUMAN_REQUIRED`/
+`COMPLETED`/`FAILED`), plus `jira_attempt_count`, `jira_claimed_at`,
+`jira_last_attempt_at`, `jira_created_at`, `jira_last_error`, and a
+partial index `idx_incident_jira_queue` for the claim query. Since init
+scripts only run against an empty Postgres volume, apply it manually to an
+existing volume:
+
+```bash
+cd infrastructure
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  < postgres/init/002-jira-publishing.sql
+```
+
+### A note on n8n's Postgres node and 0-row writes
+
+For Postgres node `typeVersion >= 2.3`, a non-`SELECT` query (e.g. our
+`UPDATE ... RETURNING` claim query) that affects **zero rows** still emits
+one output item (`{success: true}`) instead of zero items — only pure
+`SELECT`s correctly emit 0 items for 0 rows. Relying on "0 items = stop
+the workflow" after a claim query is therefore unsafe and, in early
+testing, caused a spurious duplicate Jira ticket when no incident was
+actually claimed. The fix is the explicit `Incident Claimed?` IF node
+right after `Claim Jira Incident`, checking `{{ $json.id }}` with the
+`exists` operator — this is the correct way to detect "nothing claimed"
+for any future Postgres claim/upsert pattern in this project.
+
+### Verified test results (headless, via `n8n execute` CLI)
+
+- **Test A** (new `DETECTED` incident): claimed, `Create Jira Issue` ran,
+  ticket `AUTO-3` created, `status = JIRA_CREATED`,
+  `jira_attempt_count = 1`.
+- **Test B** (immediate re-run): 0 incidents claimed, `Incident Claimed?`
+  correctly stops the run, no new ticket, `jira_attempt_count` unchanged.
+- **Test C** (reconciliation — `jira_key`/`status` cleared in Postgres
+  only, simulating a lost Jira response): `Search Jira by Fingerprint`
+  found `AUTO-3`, `Create Jira Issue` was **not** called, `Link Existing
+  Jira` restored `jira_key`. Exactly one Jira issue carries the
+  fingerprint label throughout.
+- **Test D** (stale claim retry — `status = JIRA_PENDING` with
+  `jira_claimed_at` 11 minutes in the past): incident reclaimed by the
+  lease-expiry branch, existing ticket found by fingerprint search,
+  `jira_key` restored, no duplicate created.
+
+### Activating the schedule
+
+Same as workflow 01 — toggle **Active** from the n8n UI (raw SQL flag
+edits do not reliably (de)register n8n's schedule trigger in this
+version). Workflow 02 runs once a minute, independently of workflow 01, so
+Jira outages never block error ingestion into `autofix.incident`.
+
 ## Scope of this stage
 
 Not included at this stage: database, Kafka, Kubernetes, authentication,
-Jira client, Elasticsearch client, automated fixing, automated Pull Request
-creation, and automated deployment. These will be added in later POC stages.
+automated fixing, automated Pull Request creation, and automated
+deployment. These will be added in later POC stages.

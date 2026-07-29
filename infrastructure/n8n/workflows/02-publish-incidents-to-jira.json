@@ -1,0 +1,357 @@
+{
+  "name": "02 - Publish Incidents to Jira",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "fc506b7e622099c4",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "d90e0b013e2f5f18",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1200,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidate AS (\n    SELECT id\n    FROM autofix.incident\n    WHERE jira_key IS NULL\n      AND jira_attempt_count < 5\n      AND (\n          status IN ('DETECTED', 'JIRA_FAILED')\n          OR (\n              status = 'JIRA_PENDING'\n              AND jira_claimed_at <\n                  NOW() - INTERVAL '10 minutes'\n          )\n      )\n    ORDER BY created_at ASC\n    FOR UPDATE SKIP LOCKED\n    LIMIT 1\n)\nUPDATE autofix.incident AS incident\nSET\n    status = 'JIRA_PENDING',\n    jira_claimed_at = NOW(),\n    jira_last_attempt_at = NOW(),\n    jira_attempt_count =\n        incident.jira_attempt_count + 1,\n    jira_last_error = NULL,\n    updated_at = NOW()\nFROM candidate\nWHERE incident.id = candidate.id\nRETURNING\n    incident.id,\n    incident.fingerprint,\n    incident.service_name,\n    incident.environment,\n    incident.exception_type,\n    incident.normalized_exception_message,\n    incident.application_stack_frame,\n    incident.first_seen_at,\n    incident.last_seen_at,\n    incident.occurrence_count,\n    incident.sample_correlation_id,\n    incident.sample_request_path,\n    incident.sample_http_method,\n    incident.sample_stack_trace,\n    incident.status,\n    incident.jira_attempt_count;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "1470a52063ffaa64",
+      "name": "Claim Jira Incident",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -960,
+        288
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function text(value, fallback = '') {\n  if (value === null || value === undefined) {\n    return fallback;\n  }\n\n  return String(value);\n}\n\nfunction truncate(value, maxLength) {\n  const source = text(value);\n\n  if (source.length <= maxLength) {\n    return source;\n  }\n\n  return `${source.slice(0, maxLength)}\\n...[truncated]`;\n}\n\nconst incident = $json;\n\nconst fingerprintLabel =\n  `autofix-fp-${incident.fingerprint}`;\n\nconst endpoint = [\n  incident.sample_http_method,\n  incident.sample_request_path,\n]\n  .filter(Boolean)\n  .join(' ');\n\nconst rawSummary = [\n  '[AutoFix]',\n  `[${incident.service_name}]`,\n  incident.exception_type,\n  endpoint ? `at ${endpoint}` : '',\n]\n  .filter(Boolean)\n  .join(' ');\n\nconst summary = truncate(rawSummary, 240);\n\nconst description = [\n  'Automatically detected application incident.',\n  '',\n  `Incident ID: ${incident.id}`,\n  `Fingerprint: ${incident.fingerprint}`,\n  `Service: ${incident.service_name}`,\n  `Environment: ${incident.environment}`,\n  `Exception: ${incident.exception_type}`,\n  `Normalized message: ${incident.normalized_exception_message}`,\n  `Application frame: ${incident.application_stack_frame}`,\n  `Endpoint: ${endpoint}`,\n  `Occurrences: ${incident.occurrence_count}`,\n  `First seen: ${incident.first_seen_at}`,\n  `Last seen: ${incident.last_seen_at}`,\n  `Sample correlation ID: ${incident.sample_correlation_id}`,\n  '',\n  'Stack trace:',\n  '```',\n  truncate(incident.sample_stack_trace, 12000),\n  '```',\n  '',\n  'AutoFix policy:',\n  '- This issue was generated automatically.',\n  '- Any generated fix must include a regression test.',\n  '- Direct push and automatic merge are prohibited.',\n].join('\\n');\n\nreturn {\n  json: {\n    ...incident,\n    fingerprintLabel,\n    summary,\n    description,\n    jiraLabels: [\n      'autofix-poc',\n      'auto-generated',\n      'autofix-candidate',\n      fingerprintLabel,\n    ],\n  },\n};"
+      },
+      "id": "65068181d926310e",
+      "name": "Prepare Jira Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "limit": 1,
+        "options": {
+          "jql": "={{ 'project = AUTO AND labels = \"' + $('Prepare Jira Payload').first().json.fingerprintLabel + '\" ORDER BY created ASC' }}"
+        }
+      },
+      "id": "1b3f04378d522e49",
+      "name": "Search Jira by Fingerprint",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        -480,
+        288
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0bf896963196a973",
+              "leftValue": "={{ Boolean($json.key) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e70869dbd49c0143",
+      "name": "Jira Ticket Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -240,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET\n    jira_key = $2,\n    status = 'JIRA_CREATED',\n    jira_created_at = COALESCE(\n        jira_created_at,\n        NOW()\n    ),\n    jira_claimed_at = NULL,\n    jira_last_error = NULL,\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key IS NULL\nRETURNING\n    id,\n    fingerprint,\n    jira_key,\n    status,\n    jira_attempt_count;",
+        "options": {
+          "queryReplacement": "={{ [ $('Prepare Jira Payload').first().json.id, $('Search Jira by Fingerprint').first().json.key ] }}"
+        }
+      },
+      "id": "9cc5e42f8db636b5",
+      "name": "Link Existing Jira",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "project": {
+          "mode": "id",
+          "value": "10002"
+        },
+        "issueType": {
+          "mode": "id",
+          "value": "10012"
+        },
+        "summary": "={{ $('Prepare Jira Payload').first().json.summary }}",
+        "additionalFields": {
+          "description": "={{ $('Prepare Jira Payload').first().json.description }}",
+          "labels": "={{ $('Prepare Jira Payload').first().json.jiraLabels }}"
+        }
+      },
+      "id": "9e88b4e3c91213c1",
+      "name": "Create Jira Issue",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        0,
+        400
+      ],
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET\n    jira_key = $2,\n    status = 'JIRA_CREATED',\n    jira_created_at = NOW(),\n    jira_claimed_at = NULL,\n    jira_last_error = NULL,\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key IS NULL\nRETURNING\n    id,\n    fingerprint,\n    jira_key,\n    status,\n    jira_attempt_count,\n    jira_created_at;",
+        "options": {
+          "queryReplacement": "={{ [ $('Prepare Jira Payload').first().json.id, $('Create Jira Issue').first().json.key ] }}"
+        }
+      },
+      "id": "e5a22330c6c94206",
+      "name": "Link Created Jira",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "032b599a81a7c528",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cd869ede984d82ae",
+      "name": "Incident Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -848,
+        288
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Claim Jira Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Claim Jira Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Jira Incident": {
+      "main": [
+        [
+          {
+            "node": "Incident Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Jira Payload": {
+      "main": [
+        [
+          {
+            "node": "Search Jira by Fingerprint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Jira by Fingerprint": {
+      "main": [
+        [
+          {
+            "node": "Jira Ticket Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jira Ticket Exists?": {
+      "main": [
+        [
+          {
+            "node": "Link Existing Jira",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Jira Issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Jira Issue": {
+      "main": [
+        [
+          {
+            "node": "Link Created Jira",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Incident Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Jira Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": {
+    "node:Schedule Trigger": {
+      "recurrenceRules": [
+        null
+      ],
+      "recurrenceRuleSignatures": [
+        null
+      ]
+    }
+  },
+  "pinData": {},
+  "active": true
+}
