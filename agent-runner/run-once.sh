@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 #
-# Stage 5D: Host Agent Runner -- top-level orchestrator.
+# Stage 5D / Stage 6: Host Agent Runner -- top-level orchestrator.
 #
 # Runs on the host (not in a container) because that is where Copilot
 # CLI, git credentials, GitHub CLI, the repository, and the Gradle/JDK
 # toolchain all live.
 #
-# Pipeline for a single job:
-#   claim-job          AGENT_PENDING -> AGENT_RUNNING (atomic, leased)
-#   prepare-worktree    isolated git worktree, deterministic branch
-#   run-copilot         Copilot CLI, no git/gh/network/MCP access
-#   validate-diff       independent judge (never trusts Copilot's report)
-#   create-pr           commit + push + idempotent Draft PR -> PR_READY
-#   report-result       notify workflow 04 -> Jira comment + REVIEW
+# Pipeline for a single job (Stage 6 order):
+#   claim-job              AGENT_PENDING -> AGENT_RUNNING (atomic, leased)
+#   fetch-jira-context      GET the live Jira issue (read-only credential)
+#   parse-jira-context      ADF -> plain text, extract AUTOFIX_CONTEXT_V1
+#   validate-jira-context   labels / fingerprint / schema / allow-list
+#   build-agent-prompt      sanitized prompt from the VALIDATED Jira context
+#   prepare-worktree        isolated git worktree, deterministic branch
+#   run-copilot             Copilot CLI, no git/gh/network/Jira/MCP access
+#   validate-diff           independent judge (never trusts Copilot's report)
+#   create-pr               commit + push + idempotent Draft PR -> PR_READY
+#   report-result           notify workflow 04 -> Jira comment + REVIEW
+#
+# Since Stage 6, PostgreSQL is no longer read for task context (exception
+# type, message, stack trace, request path, ...) -- Jira is the single
+# source of truth for that. PostgreSQL still owns orchestration state
+# (status, branch_name, attempt counters, leases) and a fingerprint used
+# only to cross-check that the live Jira issue's embedded context still
+# refers to the same incident.
 #
 # On any validation failure, the incident is written back as
-# AGENT_FAILED (retryable: no changes at all) or HUMAN_REQUIRED (not
-# retryable: policy/size/forbidden-construct violation, or the
-# independent test run failed) -- see Stage 5I.
+# AGENT_FAILED (retryable) or HUMAN_REQUIRED (not retryable) -- see
+# Stage 5I and Stage 6 Section 18.
 #
 # A simple mkdir-based lock (macOS has no `flock` CLI) prevents two
 # run-once.sh instances from claiming jobs concurrently on the same host;
@@ -29,7 +39,8 @@
 #
 # Exit codes:
 #   0 - either no job was available, or a job was processed to some
-#       terminal state (PR_READY/REVIEW, AGENT_FAILED, or HUMAN_REQUIRED)
+#       terminal state (PR_READY/REVIEW, AGENT_FAILED, HUMAN_REQUIRED, or
+#       AGENT_PENDING-with-backoff for a transient Jira error)
 #   1 - hard failure in the runner itself (git/gh/psql/lock error)
 
 set -uo pipefail
@@ -37,6 +48,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
 PROMPTS_TEMPLATE="$SCRIPT_DIR/prompts/autofix-prompt.md"
+
+# Stage 6: load agent-runner/.env if present (JIRA_BASE_URL,
+# JIRA_USER_EMAIL, JIRA_API_TOKEN, timeouts/retries, ...). Never
+# committed -- see agent-runner/.env.example.
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$SCRIPT_DIR/.env"
+  set +a
+fi
 
 AUTOFIX_ROOT="${AUTOFIX_ROOT:-$HOME/autofix-poc}"
 export AUTOFIX_ROOT
@@ -52,6 +73,11 @@ export AUTOFIX_REPO="${AUTOFIX_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 export AUTOFIX_BASE_BRANCH="${AUTOFIX_BASE_BRANCH:-main}"
 export INFRA_DIR="${INFRA_DIR:-$AUTOFIX_REPO/infrastructure}"
 
+# Stage 6 Section 18.1: after this many failed Jira-context-fetch
+# attempts, stop retrying and give up permanently (AGENT_FAILED) rather
+# than retry forever.
+MAX_JIRA_FETCH_ATTEMPTS="${MAX_JIRA_FETCH_ATTEMPTS:-3}"
+
 release_lock() {
   rmdir "$LOCK_DIR" 2>/dev/null || true
 }
@@ -65,12 +91,16 @@ trap release_lock EXIT
 log() { echo "[run-once] $*" >&2; }
 
 pg_exec() {
-  # $1 = SQL (heredoc-style, read via stdin so :'var' interpolation works)
   cd "$INFRA_DIR"
   local pg_user pg_db
   pg_user="$(grep '^POSTGRES_USER=' .env | cut -d= -f2)"
   pg_db="$(grep '^POSTGRES_DB=' .env | cut -d= -f2)"
   docker compose exec -T postgres psql -U "$pg_user" -d "$pg_db" -v ON_ERROR_STOP=1 "$@"
+}
+
+mark_incident() {
+  # $1 = status (AGENT_FAILED | HUMAN_REQUIRED | RETRY), $2 = reason, $3 = attempt count (RETRY only)
+  bash "$LIB_DIR/mark-incident-failed.sh" "$INCIDENT_ID" "$1" "$2" "${3:-0}" >&2
 }
 
 # --- 1. Claim a job ---------------------------------------------------------
@@ -84,47 +114,98 @@ elif [[ "$CLAIM_EXIT" -ne 0 ]]; then
   exit 1
 fi
 
-INCIDENT_ID="$(jq -r '.id' <<<"$CLAIM_JSON")"
-JIRA_KEY="$(jq -r '.jira_key' <<<"$CLAIM_JSON")"
-BRANCH_NAME="$(jq -r '.branch_name' <<<"$CLAIM_JSON")"
-EXCEPTION_TYPE="$(jq -r '.exception_type // "unknown"' <<<"$CLAIM_JSON")"
-NORMALIZED_MESSAGE="$(jq -r '.normalized_exception_message // "n/a"' <<<"$CLAIM_JSON")"
-APPLICATION_STACK_FRAME="$(jq -r '.application_stack_frame // "n/a"' <<<"$CLAIM_JSON")"
-SAMPLE_REQUEST_PATH="$(jq -r '.sample_request_path // "n/a"' <<<"$CLAIM_JSON")"
-SAMPLE_HTTP_METHOD="$(jq -r '.sample_http_method // "n/a"' <<<"$CLAIM_JSON")"
-SAMPLE_CORRELATION_ID="$(jq -r '.sample_correlation_id // "n/a"' <<<"$CLAIM_JSON")"
-SAMPLE_STACK_TRACE="$(jq -r '.sample_stack_trace // "n/a"' <<<"$CLAIM_JSON")"
-ATTEMPT_COUNT="$(jq -r '.agent_attempt_count' <<<"$CLAIM_JSON")"
+INCIDENT_ID="$(jq -r '.incidentId' <<<"$CLAIM_JSON")"
+JIRA_KEY="$(jq -r '.jiraKey' <<<"$CLAIM_JSON")"
+FINGERPRINT="$(jq -r '.fingerprint' <<<"$CLAIM_JSON")"
+BRANCH_NAME="$(jq -r '.branchName' <<<"$CLAIM_JSON")"
+ATTEMPT_COUNT="$(jq -r '.agentAttemptCount' <<<"$CLAIM_JSON")"
 
 log "Claimed incident $INCIDENT_ID / $JIRA_KEY (attempt $ATTEMPT_COUNT), branch $BRANCH_NAME"
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
-mark_incident_failed() {
-  # $1 = status (AGENT_FAILED | HUMAN_REQUIRED), $2 = reason
-  local status="$1" reason="$2"
-  log "Marking incident $INCIDENT_ID as $status: $reason"
-  pg_exec -v incident_id="$INCIDENT_ID" -v new_status="$status" -v reason="$reason" <<'SQL'
-    UPDATE autofix.incident
-    SET status = :'new_status',
-        agent_last_error = :'reason',
-        agent_completed_at = NOW(),
-        agent_claimed_at = NULL,
-        updated_at = NOW()
-    WHERE id = :'incident_id'
-    RETURNING id, status, agent_last_error;
-SQL
-}
+# --- 2. Fetch the live Jira issue --------------------------------------------
+# Stage 6: PostgreSQL is never used as the source of task context from
+# here on -- only the fingerprint above (for cross-checking) and the
+# technical orchestration fields already claimed.
+RAW_JIRA_FILE="$RESULTS_DIR/${JIRA_KEY}-${TIMESTAMP}-jira-raw.json"
+set +e
+bash "$LIB_DIR/fetch-jira-context.sh" "$JIRA_KEY" "$RAW_JIRA_FILE"
+FETCH_EXIT=$?
+set -e
 
-# --- 2. Prepare isolated worktree --------------------------------------------
+case "$FETCH_EXIT" in
+  0)
+    log "[$JIRA_KEY] Jira context fetched successfully"
+    ;;
+  2)
+    # Transient: connection timeout / 429 / 5xx.
+    if [[ "$ATTEMPT_COUNT" -ge "$MAX_JIRA_FETCH_ATTEMPTS" ]]; then
+      mark_incident "AGENT_FAILED" "JIRA_CONTEXT_FETCH_FAILED: exceeded $MAX_JIRA_FETCH_ATTEMPTS attempts fetching Jira context"
+    else
+      mark_incident "RETRY" "JIRA_CONTEXT_FETCH_FAILED: transient error fetching Jira issue $JIRA_KEY (attempt $ATTEMPT_COUNT)" "$ATTEMPT_COUNT"
+    fi
+    exit 0
+    ;;
+  3)
+    mark_incident "AGENT_FAILED" "JIRA_AUTH_FAILED: authentication failed while fetching $JIRA_KEY"
+    exit 0
+    ;;
+  4)
+    mark_incident "HUMAN_REQUIRED" "JIRA_ISSUE_NOT_FOUND: $JIRA_KEY does not exist or is not visible to the read-only credential"
+    exit 0
+    ;;
+  *)
+    log "fetch-jira-context.sh failed unexpectedly (exit $FETCH_EXIT) -- leaving incident as AGENT_RUNNING for lease-based retry"
+    exit 1
+    ;;
+esac
+
+# --- 3. Parse Jira ADF -> plain text + AUTOFIX_CONTEXT_V1 --------------------
+PARSED_CONTEXT_FILE="$RESULTS_DIR/${JIRA_KEY}-${TIMESTAMP}-context.json"
+if ! python3 "$LIB_DIR/parse-jira-context.py" "$RAW_JIRA_FILE" "$PARSED_CONTEXT_FILE"; then
+  mark_incident "AGENT_FAILED" "JIRA_CONTEXT_PARSE_FAILED: parse-jira-context.py failed on $JIRA_KEY"
+  exit 0
+fi
+
+# --- 4. Validate the parsed context ------------------------------------------
+VALIDATE_CONTEXT_JSON_FILE="$RESULTS_DIR/${JIRA_KEY}-${TIMESTAMP}-context-validation.json"
+set +e
+bash "$LIB_DIR/validate-jira-context.sh" "$PARSED_CONTEXT_FILE" "$INCIDENT_ID" "$JIRA_KEY" "$FINGERPRINT" > "$VALIDATE_CONTEXT_JSON_FILE"
+VALIDATE_CONTEXT_EXIT=$?
+set -e
+cat "$VALIDATE_CONTEXT_JSON_FILE" >&2
+
+if [[ "$VALIDATE_CONTEXT_EXIT" -ne 0 ]]; then
+  REASON="$(jq -r '.reason' "$VALIDATE_CONTEXT_JSON_FILE")"
+  mark_incident "HUMAN_REQUIRED" "$REASON"
+  exit 0
+fi
+
+log "[$JIRA_KEY] Context schema V1 validated"
+
+# Fields used for the commit message / PR title+body below -- sourced
+# exclusively from the validated Jira context now, never from PostgreSQL.
+EXCEPTION_TYPE="$(jq -r '.autofixContext.exceptionType // "unknown"' "$PARSED_CONTEXT_FILE")"
+APPLICATION_STACK_FRAME="$(jq -r '.autofixContext.applicationFrame // "n/a"' "$PARSED_CONTEXT_FILE")"
+SAMPLE_HTTP_METHOD="$(jq -r '.autofixContext.httpMethod // "n/a"' "$PARSED_CONTEXT_FILE")"
+SAMPLE_REQUEST_PATH="$(jq -r '.autofixContext.requestPath // "n/a"' "$PARSED_CONTEXT_FILE")"
+CONTEXT_HASH="$(jq -c '.autofixContext' "$PARSED_CONTEXT_FILE" | shasum -a 256 | awk '{print $1}')"
+log "[$JIRA_KEY] Jira context hash: $CONTEXT_HASH"
+
+# --- 5. Build the sanitized Copilot prompt -----------------------------------
+PROMPT_FILE="$PROMPTS_DIR/${JIRA_KEY}-${TIMESTAMP}.md"
+bash "$LIB_DIR/build-agent-prompt.sh" "$PARSED_CONTEXT_FILE" "$PROMPTS_TEMPLATE" "$PROMPT_FILE"
+
+# --- 6. Prepare isolated worktree --------------------------------------------
 WORKTREE="$(bash "$LIB_DIR/prepare-worktree.sh" "$JIRA_KEY" "$BRANCH_NAME")"
 if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
-  mark_incident_failed "AGENT_FAILED" "WORKTREE_SETUP_FAILED: could not prepare git worktree for $BRANCH_NAME"
+  mark_incident "AGENT_FAILED" "WORKTREE_SETUP_FAILED: could not prepare git worktree for $BRANCH_NAME"
   exit 0
 fi
 log "Worktree ready at $WORKTREE"
 
-# --- 2b. Reconciliation shortcut ---------------------------------------------
+# --- 6b. Reconciliation shortcut ---------------------------------------------
 # Stage 5I: "Push выполнен, но runner упал" -- if this branch already has a
 # commit ahead of main (a prior attempt got as far as create-pr.sh) AND an
 # open PR already exists for it, there is nothing left for Copilot to do:
@@ -163,35 +244,13 @@ if [[ "$RECONCILE_MODE" == "true" ]]; then
   cat "$VALIDATION_JSON_FILE" >&2
 else
 
-# --- 3. Render prompt and invoke Copilot CLI ---------------------------------
-PROMPT_FILE="$PROMPTS_DIR/${JIRA_KEY}-${TIMESTAMP}.md"
-sed \
-  -e "s/{{JIRA_KEY}}/${JIRA_KEY//\//\\/}/g" \
-  -e "s/{{EXCEPTION_TYPE}}/${EXCEPTION_TYPE//\//\\/}/g" \
-  -e "s/{{SAMPLE_HTTP_METHOD}}/${SAMPLE_HTTP_METHOD//\//\\/}/g" \
-  -e "s/{{SAMPLE_REQUEST_PATH}}/${SAMPLE_REQUEST_PATH//\//\\/}/g" \
-  -e "s/{{SAMPLE_CORRELATION_ID}}/${SAMPLE_CORRELATION_ID//\//\\/}/g" \
-  "$PROMPTS_TEMPLATE" > "$PROMPT_FILE"
-# Multi-line fields (message/frame/stack trace) are substituted with
-# python instead of sed -- they can contain '/' and newlines that would
-# break a sed s/// replacement.
-python3 - "$PROMPT_FILE" "$NORMALIZED_MESSAGE" "$APPLICATION_STACK_FRAME" "$SAMPLE_STACK_TRACE" <<'PYEOF'
-import sys
-path, message, frame, trace = sys.argv[1:5]
-text = open(path).read()
-text = text.replace("{{NORMALIZED_MESSAGE}}", message)
-text = text.replace("{{APPLICATION_STACK_FRAME}}", frame)
-text = text.replace("{{SAMPLE_STACK_TRACE}}", trace)
-open(path, "w").write(text)
-PYEOF
-
+# --- 7. Run Copilot CLI -------------------------------------------------------
 LOG_FILE="$LOGS_DIR/${JIRA_KEY}-${TIMESTAMP}-copilot.log"
 bash "$LIB_DIR/run-copilot.sh" "$WORKTREE" "$PROMPT_FILE" "$LOG_FILE"
 COPILOT_EXIT=$?
 log "Copilot CLI finished with exit code $COPILOT_EXIT (non-fatal -- validate-diff.sh decides)"
 
-# --- 4. Independent validation gate ------------------------------------------
-VALIDATION_JSON_FILE="$RESULTS_DIR/${JIRA_KEY}-${TIMESTAMP}-validation.json"
+# --- 8. Independent validation gate ------------------------------------------
 set +e
 bash "$LIB_DIR/validate-diff.sh" "$WORKTREE" > "$VALIDATION_JSON_FILE"
 VALIDATE_EXIT=$?
@@ -200,14 +259,14 @@ cat "$VALIDATION_JSON_FILE" >&2
 
 if [[ "$VALIDATE_EXIT" -eq 10 ]]; then
   REASON="$(jq -r '.reason' "$VALIDATION_JSON_FILE")"
-  mark_incident_failed "AGENT_FAILED" "$REASON"
+  mark_incident "AGENT_FAILED" "$REASON"
   exit 0
 elif [[ "$VALIDATE_EXIT" -eq 20 ]]; then
   REASON="$(jq -r '.reason' "$VALIDATION_JSON_FILE")"
-  mark_incident_failed "HUMAN_REQUIRED" "$REASON"
+  mark_incident "HUMAN_REQUIRED" "$REASON"
   exit 0
 elif [[ "$VALIDATE_EXIT" -ne 0 ]]; then
-  mark_incident_failed "AGENT_FAILED" "VALIDATION_GATE_ERROR: validate-diff.sh exited $VALIDATE_EXIT unexpectedly"
+  mark_incident "AGENT_FAILED" "VALIDATION_GATE_ERROR: validate-diff.sh exited $VALIDATE_EXIT unexpectedly"
   exit 0
 fi
 
@@ -216,7 +275,7 @@ fi
 
 log "Validation gate: PASS"
 
-# --- 5. Commit, push, Draft PR -----------------------------------------------
+# --- 9. Commit, push, Draft PR -----------------------------------------------
 COMMIT_MESSAGE="fix: autofix for ${EXCEPTION_TYPE} [$JIRA_KEY]"
 PR_TITLE="[$JIRA_KEY] Automated fix for ${EXCEPTION_TYPE}"
 PR_BODY_FILE="$RESULTS_DIR/${JIRA_KEY}-${TIMESTAMP}-pr-body.md"
@@ -261,9 +320,21 @@ if [[ "$CREATE_PR_EXIT" -ne 0 ]]; then
   exit 1
 fi
 
+# Stage 6: record the Jira-context provenance/audit fields alongside the
+# PR_READY update create-pr.sh already made -- jira_context_hash is an
+# audit fingerprint of the validated context (not the content itself).
+pg_exec -v incident_id="$INCIDENT_ID" -v source="JIRA_REST" -v hash="$CONTEXT_HASH" <<'SQL' >&2
+    UPDATE autofix.incident
+    SET agent_context_source = :'source',
+        jira_context_hash = :'hash',
+        jira_context_fetched_at = NOW(),
+        updated_at = NOW()
+    WHERE id = :'incident_id';
+SQL
+
 log "PR_READY: $(cat "$PR_JSON_FILE")"
 
-# --- 6. Notify workflow 04 (Jira comment + REVIEW) ---------------------------
+# --- 10. Notify workflow 04 (Jira comment + REVIEW) --------------------------
 PR_NUMBER="$(jq -r '.prNumber' "$PR_JSON_FILE")"
 PR_URL="$(jq -r '.prUrl' "$PR_JSON_FILE")"
 COMMIT_SHA="$(jq -r '.commitSha' "$PR_JSON_FILE")"
@@ -278,7 +349,7 @@ REPORT_EXIT=$?
 set -e
 
 if [[ "$REPORT_EXIT" -ne 0 ]]; then
-  log "report-result.sh failed -- incident stays PR_READY, safe to retry (see Stage 5I)"
+  log "report-result.sh failed -- incident stays PR_READY, safe to retry later (see Stage 5I)"
   exit 0
 fi
 

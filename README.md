@@ -462,8 +462,138 @@ full Stage 5 end-to-end test report (successful flow, idempotent re-run,
 interrupted-after-PR recovery, Jira-unavailable recovery, failing-tests
 rejection, and forbidden-diff rejection).
 
-## Scope of this stage
+## Scope of Stage 5
 
 Not included at this stage: automatic merge, automatic deployment, direct
 push to `main`, and Copilot CLI access to Jira, GitHub, Kubernetes, or
 Docker. A human always reviews and merges the Draft Pull Request.
+
+## Stage 6: Jira as the source of task context
+
+Stage 5 stored the incident's stack trace, message, and endpoint in
+PostgreSQL, and the Agent Runner read that snapshot when building the
+Copilot prompt. Stage 6 removes that duplication: **PostgreSQL now holds
+only orchestration state** (status, branch name, attempt count, timing,
+a `fingerprint` used only for cross-checking). The actual task context —
+exception type, message, stack trace, endpoint — is fetched **live from
+Jira** on every run, via a read-only REST call, and is treated as
+untrusted external input until validated.
+
+```
+claim-job.sh            claims a job, returns only technical identifiers
+                         (incidentId, jiraKey, fingerprint, branchName,
+                         agentAttemptCount) -- no task content
+        ↓
+fetch-jira-context.sh    GET /rest/api/3/issue/<key> (read-only Jira
+                         credential, distinct from n8n's write credential)
+        ↓
+parse-jira-context.py    converts the Atlassian Document Format
+                         description/comments to plain text; extracts the
+                         AUTOFIX_CONTEXT_V1 machine-readable JSON block;
+                         extracts only comments marked
+                         [AUTOFIX_AGENT_CONTEXT] -- everything else is
+                         discarded
+        ↓
+validate-jira-context.sh cross-checks the fetched context against the
+                         claimed job (jiraKey, incidentId, fingerprint),
+                         re-applies the Stage 5C policy allow-list against
+                         the live ticket, and rejects closed tickets,
+                         missing labels, or malformed context
+        ↓
+build-agent-prompt.sh   renders the Copilot prompt from validated context
+                         only, with the Jira content explicitly delimited
+                         as <UNTRUSTED_JIRA_CONTEXT>...</UNTRUSTED_JIRA_CONTEXT>
+        ↓
+(unchanged Stage 5 pipeline: worktree → Copilot CLI → Validation Gate →
+ commit/push/Draft PR → report-result.sh)
+```
+
+### Why Jira, not PostgreSQL
+
+- A ticket can be edited by a human after triage (e.g. to add
+  clarifying comments) — re-reading Jira on every attempt picks that up;
+  a PostgreSQL snapshot taken at ingestion time would not.
+- It removes an entire class of drift: the Jira ticket a reviewer reads
+  and the data Copilot acted on are now guaranteed to be the same
+  content, not two independently-evolving copies.
+- It forces an explicit trust boundary: everything that reaches Copilot's
+  prompt has passed through a parser and a validation gate, rather than
+  being implicitly trusted because it came from "our own" database.
+
+### Prompt-injection protection
+
+Jira ticket content is external, human-editable input and is never
+trusted outright:
+
+- Only comments whose text begins with the literal marker
+  `[AUTOFIX_AGENT_CONTEXT]` are extracted (`parse-jira-context.py`); the
+  marker is stripped and the remainder is passed through. Every other
+  comment is silently discarded and never reaches Copilot.
+- The rendered prompt explicitly wraps all Jira-derived content in
+  `<UNTRUSTED_JIRA_CONTEXT>...</UNTRUSTED_JIRA_CONTEXT>` and instructs
+  Copilot to treat it as descriptive text only, never as operational
+  instructions.
+- `validate-jira-context.sh` independently re-verifies the ticket against
+  the same Stage 5C policy allow-list (service, environment, exception
+  type, request path) using the live Jira data — a ticket edited after
+  Policy Gate approval to fall outside policy is rejected before Copilot
+  ever runs.
+
+### New/changed components
+
+- **`infrastructure/postgres/init/004-jira-agent-context.sql`** — adds
+  `agent_context_source`, `jira_context_fetched_at`, `jira_context_hash`,
+  and `agent_next_attempt_at` (backoff-aware retry scheduling) to
+  `autofix.incident`. Re-runnable against an existing database.
+- **`agent-runner/lib/fetch-jira-context.sh`** — read-only Jira REST
+  fetch with distinct exit codes: `0` success, `2` transient/retryable,
+  `3` auth failure (permanent), `4` not found (permanent), `1` unexpected
+  hard failure.
+- **`agent-runner/lib/parse-jira-context.py`** — ADF → plain-text
+  conversion, `AUTOFIX_CONTEXT_V1` JSON extraction, and the
+  `[AUTOFIX_AGENT_CONTEXT]` comment allow-list described above.
+- **`agent-runner/lib/validate-jira-context.sh`** — the second
+  independent judge in the pipeline (`validate-diff.sh` being the
+  first): rejects a claimed job whose live Jira context no longer
+  matches or no longer qualifies, with reasons recorded via
+  `mark-incident-failed.sh`.
+- **`agent-runner/lib/build-agent-prompt.sh`** — renders
+  `agent-runner/prompts/autofix-prompt.md` from validated context only.
+- **`agent-runner/lib/mark-incident-failed.sh`** — shared helper for
+  `AGENT_FAILED` / `HUMAN_REQUIRED` / backoff-scheduled `RETRY`
+  transitions (1 / 5 / 15 minute schedule keyed on attempt count).
+- **`infrastructure/n8n/workflows/02-publish-incidents-to-jira.json`** —
+  the "Prepare Jira Payload" step now embeds a machine-readable
+  `AUTOFIX_CONTEXT_V1` / `AUTOFIX_CONTEXT_END` JSON block in the ticket
+  description alongside the existing human-readable summary, so the
+  Agent Runner and a human reviewer read the same ticket content.
+  Verified that Jira's Markdown→ADF conversion preserves the fenced
+  ```json block and marker lines exactly as `parse-jira-context.py`
+  expects.
+- **`infrastructure/n8n/workflows/03-queue-autofix-candidates.json`** —
+  the Policy Gate now stamps `agent_context_source = 'JIRA_REST'` when
+  promoting an incident to `AGENT_PENDING`.
+
+### Configuration additions
+
+| Variable | Purpose |
+|---|---|
+| `JIRA_BASE_URL` | Jira Cloud tenant base URL |
+| `JIRA_USER_EMAIL` / `JIRA_API_TOKEN` | Read-only Jira REST credential used by `fetch-jira-context.sh` (for this POC, the same token used elsewhere; a dedicated read-only account is recommended before production use) |
+| `JIRA_FETCH_TIMEOUT_SECONDS` / `JIRA_FETCH_MAX_RETRIES` | Transient-failure retry tuning for `fetch-jira-context.sh` |
+| `ALLOW_LEGACY_DB_CONTEXT_FALLBACK` | Must remain `false`; documents that there is deliberately no fallback to the old PostgreSQL-snapshot behavior |
+
+See `agent-runner/.env.example` for the full list.
+
+### Test results
+
+See
+[`docs/stage6-jira-context-test-report.md`](docs/stage6-jira-context-test-report.md)
+for the Stage 6 test report.
+
+## Scope of Stage 6
+
+Not included at this stage: a dedicated read-only Jira service account
+(the POC reuses the existing token), storage of Jira content in
+PostgreSQL (only a `fingerprint` cross-check remains), and any change to
+Stage 5's no-auto-merge / human-review guarantees.
