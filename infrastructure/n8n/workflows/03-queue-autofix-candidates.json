@@ -1,0 +1,280 @@
+{
+  "active": true,
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Select JIRA_CREATED Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Select JIRA_CREATED Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select JIRA_CREATED Incident": {
+      "main": [
+        [
+          {
+            "node": "Incident Selected?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Incident Selected?": {
+      "main": [
+        [
+          {
+            "node": "Policy Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Policy Gate": {
+      "main": [
+        [
+          {
+            "node": "Policy Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Policy Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Approve: Set AGENT_PENDING",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deny: Set HUMAN_REQUIRED",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "03 - Queue AutoFix Candidates",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "n03-manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "n03-schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1200,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidate AS (\n    SELECT id\n    FROM autofix.incident\n    WHERE status = 'JIRA_CREATED'\n      AND jira_key IS NOT NULL\n      AND branch_name IS NULL\n    ORDER BY created_at ASC\n    FOR UPDATE SKIP LOCKED\n    LIMIT 1\n)\nUPDATE autofix.incident AS incident\nSET\n    status = 'AGENT_PENDING',\n    updated_at = NOW()\nFROM candidate\nWHERE incident.id = candidate.id\nRETURNING\n    incident.id,\n    incident.jira_key,\n    incident.service_name,\n    incident.environment,\n    incident.exception_type,\n    incident.sample_request_path,\n    incident.application_stack_frame,\n    incident.agent_attempt_count,\n    incident.status;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "n03-select-incident",
+      "name": "Select JIRA_CREATED Incident",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -960,
+        288
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "n03-cond-selected",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-incident-selected",
+      "name": "Incident Selected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -720,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const incident = $json;\n\nconst deniedReasons = [];\n\nif (incident.service_name !== 'autofix-demo-service') {\n  deniedReasons.push(`service_name=${incident.service_name}`);\n}\nif (incident.environment !== 'local') {\n  deniedReasons.push(`environment=${incident.environment}`);\n}\nif (!incident.jira_key) {\n  deniedReasons.push('jira_key is missing');\n}\nif (incident.exception_type !== 'java.lang.NullPointerException') {\n  deniedReasons.push(`exception_type=${incident.exception_type}`);\n}\nif (incident.sample_request_path !== '/api/customers/200/display-name') {\n  deniedReasons.push(`sample_request_path=${incident.sample_request_path}`);\n}\nif (!(incident.application_stack_frame || '').includes('com.example.autofixdemo')) {\n  deniedReasons.push('application_stack_frame does not contain com.example.autofixdemo');\n}\nif (incident.agent_attempt_count >= 3) {\n  deniedReasons.push(`agent_attempt_count=${incident.agent_attempt_count}`);\n}\n\nconst allowed = deniedReasons.length === 0;\n\nreturn {\n  json: {\n    ...incident,\n    policyAllowed: allowed,\n    policyReason: allowed\n      ? 'ALLOWED: matches Stage 5C policy gate allow-list'\n      : `POLICY_REJECTED: ${deniedReasons.join('; ')}`,\n    branchName: `autofix/${incident.jira_key}`,\n  },\n};\n"
+      },
+      "id": "n03-policy-gate",
+      "name": "Policy Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "n03-cond-allowed",
+              "leftValue": "={{ $json.policyAllowed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-policy-allowed",
+      "name": "Policy Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -240,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET\n    branch_name = $2,\n    updated_at = NOW()\nWHERE id = $1\n  AND status = 'AGENT_PENDING'\nRETURNING\n    id,\n    jira_key,\n    status,\n    branch_name;",
+        "options": {
+          "queryReplacement": "={{ [ $('Policy Gate').first().json.id, $('Policy Gate').first().json.branchName ] }}"
+        }
+      },
+      "id": "n03-approve-agent-pending",
+      "name": "Approve: Set AGENT_PENDING",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        128
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET\n    status = 'HUMAN_REQUIRED',\n    agent_last_error = $2,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING\n    id,\n    jira_key,\n    status,\n    agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $('Policy Gate').first().json.id, $('Policy Gate').first().json.policyReason ] }}"
+        }
+      },
+      "id": "n03-deny-human-required",
+      "name": "Deny: Set HUMAN_REQUIRED",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": {
+    "node:Schedule Trigger": {
+      "recurrenceRules": [
+        null
+      ],
+      "recurrenceRuleSignatures": [
+        null
+      ]
+    }
+  }
+}

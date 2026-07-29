@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AutoFix Agent Result",
+  "description": "Structure stored in autofix.incident.agent_result (JSONB) once create-pr.sh has produced a Draft PR. This is the only durable record of the agent run's outcome -- no PR URL is persisted (branch_name + prNumber are sufficient to look the PR up again via `gh pr list --head`).",
+  "type": "object",
+  "required": ["testsPassed", "changedFiles", "addedLines", "deletedLines", "commitSha", "prNumber"],
+  "properties": {
+    "testsPassed": {
+      "type": "boolean",
+      "description": "Always true when this object is written -- validate-diff.sh only allows create-pr.sh to run after an independent `./gradlew clean test` pass."
+    },
+    "changedFiles": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of files changed in the commit (production + test)."
+    },
+    "addedLines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deletedLines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "commitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$",
+      "description": "The commit SHA pushed to the autofix/<JIRA-KEY> branch."
+    },
+    "prNumber": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "GitHub Draft PR number. Combined with branch_name, this is enough to reconstruct the PR URL via `gh pr list --head <branch_name>` -- the URL itself is never stored."
+    }
+  },
+  "additionalProperties": false
+}
