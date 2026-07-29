@@ -12,12 +12,12 @@
 # runner process that crashed mid-job -- by resetting it back to
 # AGENT_PENDING so it becomes claimable again.
 #
-# Stage 6: this deliberately returns ONLY technical orchestration fields
+# Stage 6B: this deliberately returns ONLY technical orchestration fields
 # -- no exception/stack-trace/request-path detail. Since Stage 6, Jira is
-# the source of truth for task context: the Agent Runner fetches the live
-# Jira issue itself (fetch-jira-context.sh) instead of trusting a
-# PostgreSQL snapshot that could have gone stale the moment a human
-# edited the ticket.
+# the source of truth for task context; since Stage 6B, the Agent Runner
+# fetches it via a local n8n webhook (fetch-ticket-context.sh) instead of
+# calling Jira REST directly or trusting a PostgreSQL snapshot that could
+# have gone stale the moment a human edited the ticket.
 #
 # Usage:
 #   claim-job.sh
@@ -59,9 +59,9 @@ WITH lease_reclaim AS (
 ),
 claimable AS (
     -- Stage 6: agent_next_attempt_at enforces backoff after a transient
-    -- Jira-fetch failure (see fetch-jira-context.sh / mark-incident-failed.sh)
-    -- -- a job whose next-attempt time is still in the future must not
-    -- be claimed early.
+    -- ticket-context-fetch failure (see fetch-ticket-context.sh /
+    -- mark-incident-failed.sh) -- a job whose next-attempt time is still
+    -- in the future must not be claimed early.
     SELECT id
     FROM autofix.incident
     WHERE status = 'AGENT_PENDING'
@@ -81,8 +81,8 @@ claimed AS (
     FROM claimable
     WHERE i.id = claimable.id
     -- Stage 6: only technical orchestration fields are returned --
-    -- fingerprint is included so validate-jira-context.sh can confirm the
-    -- live Jira issue embedded context still matches this incident, but
+    -- fingerprint is included so validate-ticket-response.sh can confirm
+    -- the n8n-fetched ticket context still matches this incident, but
     -- no exception/message/stack-trace/request-path detail is returned
     -- here (that is fetched fresh from Jira, never from this snapshot).
     RETURNING i.id AS "incidentId", i.jira_key AS "jiraKey",

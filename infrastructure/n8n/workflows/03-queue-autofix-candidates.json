@@ -218,7 +218,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE autofix.incident\nSET\n    branch_name = $2,\n    agent_context_source = 'JIRA_REST',\n    updated_at = NOW()\nWHERE id = $1\n  AND status = 'AGENT_PENDING'\nRETURNING\n    id,\n    jira_key,\n    status,\n    branch_name,\n    agent_context_source;",
+        "query": "UPDATE autofix.incident\nSET\n    branch_name = $2,\n    agent_context_source = 'N8N_JIRA_PROXY',\n    updated_at = NOW()\nWHERE id = $1\n  AND status = 'AGENT_PENDING'\nRETURNING\n    id,\n    jira_key,\n    status,\n    branch_name,\n    agent_context_source;",
         "options": {
           "queryReplacement": "={{ [ $('Policy Gate').first().json.id, $('Policy Gate').first().json.branchName ] }}"
         }

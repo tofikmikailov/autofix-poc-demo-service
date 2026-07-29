@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 #
-# Stage 6: build the sanitized Copilot prompt from a *validated* Jira
-# context (validate-jira-context.sh must have already returned PASS for
-# the input file this reads). This is the only place PostgreSQL-derived
-# data (the incident's fingerprint, used only for equality checks
-# upstream) stops being relevant at all -- from here on, every field in
-# the rendered prompt comes from the live Jira issue.
+# Stage 6B: build the sanitized Copilot prompt from a *validated* n8n
+# ticket-context response (validate-ticket-response.sh must have already
+# returned PASS for the input file this reads). This is the only place
+# PostgreSQL-derived data (the incident's fingerprint, used only for
+# equality checks upstream) stops being relevant at all -- from here on,
+# every field in the rendered prompt comes from n8n Workflow 05's
+# sanitized response, which itself is the only thing in this whole
+# pipeline that ever holds a Jira credential.
 #
-# Never includes: Jira API token, Jira account email, the raw Jira REST
-# response, unapproved comments, or any workflow/database metadata.
+# Never includes: any Jira credential, the raw Jira REST response,
+# unapproved comments, or any workflow/database metadata.
 #
 # Usage:
-#   build-agent-prompt.sh <parsed-context.json> <prompt-template> <output-prompt-file>
+#   build-agent-prompt.sh <ticket-context.json> <prompt-template> <output-prompt-file>
 #
 # Exit codes:
 #   0 - prompt written to <output-prompt-file>
@@ -41,8 +43,9 @@ context_path, template_path, output_path = sys.argv[1:4]
 with open(context_path, "r", encoding="utf-8") as f:
     ctx = json.load(f)
 
-autofix = ctx.get("autofixContext") or {}
-approved_comments = ctx.get("approvedComments") or []
+ticket = ctx.get("ticket") or {}
+incident = ctx.get("incident") or {}
+approved_comments = ctx.get("approvedAgentContext") or []
 
 if approved_comments:
     approved_text = "\n\n".join(f"- {c}" for c in approved_comments)
@@ -50,14 +53,14 @@ else:
     approved_text = "(none)"
 
 replacements = {
-    "{{JIRA_KEY}}": ctx.get("key", ""),
-    "{{SUMMARY}}": ctx.get("summary", ""),
-    "{{EXCEPTION_TYPE}}": autofix.get("exceptionType", "unknown"),
-    "{{NORMALIZED_MESSAGE}}": autofix.get("normalizedMessage", "n/a"),
-    "{{APPLICATION_FRAME}}": autofix.get("applicationFrame", "n/a"),
-    "{{HTTP_METHOD}}": autofix.get("httpMethod", "n/a"),
-    "{{REQUEST_PATH}}": autofix.get("requestPath", "n/a"),
-    "{{STACK_TRACE}}": autofix.get("stackTrace", "n/a"),
+    "{{JIRA_KEY}}": ticket.get("key", ""),
+    "{{SUMMARY}}": ticket.get("summary", ""),
+    "{{EXCEPTION_TYPE}}": incident.get("exceptionType", "unknown"),
+    "{{NORMALIZED_MESSAGE}}": incident.get("normalizedMessage", "n/a"),
+    "{{APPLICATION_FRAME}}": incident.get("applicationFrame", "n/a"),
+    "{{HTTP_METHOD}}": incident.get("httpMethod", "n/a"),
+    "{{REQUEST_PATH}}": incident.get("requestPath", "n/a"),
+    "{{STACK_TRACE}}": incident.get("stackTrace", "n/a"),
     "{{APPROVED_COMMENTS}}": approved_text,
 }
 

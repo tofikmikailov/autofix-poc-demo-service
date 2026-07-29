@@ -1,0 +1,742 @@
+{
+  "active": true,
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Auth Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Valid?": {
+      "main": [
+        [
+          {
+            "node": "Fields Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fields Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get Jira Issue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Jira Issue": {
+      "main": [
+        [
+          {
+            "node": "Classify Issue Fetch Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Issue Fetch Result": {
+      "main": [
+        [
+          {
+            "node": "Issue Fetch OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Issue Fetch OK?": {
+      "main": [
+        [
+          {
+            "node": "Get Jira Comments",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Issue Not Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Issue Not Found?": {
+      "main": [
+        [
+          {
+            "node": "Respond Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Jira Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Jira Comments": {
+      "main": [
+        [
+          {
+            "node": "Parse Jira ADF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Jira ADF": {
+      "main": [
+        [
+          {
+            "node": "Extract AutoFix Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract AutoFix Context": {
+      "main": [
+        [
+          {
+            "node": "Context Extracted OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Context Extracted OK?": {
+      "main": [
+        [
+          {
+            "node": "Validate Ticket Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Context Format",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Ticket Context": {
+      "main": [
+        [
+          {
+            "node": "Ticket Context Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ticket Context Valid?": {
+      "main": [
+        [
+          {
+            "node": "Build Sanitized Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Jira Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Sanitized Response": {
+      "main": [
+        [
+          {
+            "node": "Compute Context Hash",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Context Hash": {
+      "main": [
+        [
+          {
+            "node": "Finalize Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "05 - Get AutoFix Ticket Context",
+  "nodes": [
+    {
+      "id": "n05-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "autofix-ticket-context",
+      "position": [
+        -2400,
+        400
+      ],
+      "parameters": {
+        "path": "autofix/ticket-context",
+        "options": {},
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      }
+    },
+    {
+      "id": "n05-validate-request",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2160,
+        400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const headers = $json.headers || {};\nconst body = $json.body || $json;\n\nconst expectedToken = $env.AUTOFIX_RUNNER_WEBHOOK_TOKEN || '';\nconst receivedToken = headers['x-autofix-runner-token'] || '';\n\nfunction timingSafeEqual(a, b) {\n  if (typeof a !== 'string' || typeof b !== 'string') return false;\n  if (a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) {\n    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  }\n  return diff === 0;\n}\n\nconst authValid = expectedToken.length > 0 && timingSafeEqual(receivedToken, expectedToken);\n\nconst errors = [];\nconst incidentId = body.incidentId;\nconst jiraKey = body.jiraKey;\nconst fingerprint = body.fingerprint;\nconst branchName = body.branchName;\n\nif (!(Number.isInteger(incidentId) && incidentId > 0)) {\n  errors.push('incidentId must be a positive integer');\n}\nif (typeof jiraKey !== 'string' || !/^AUTO-[0-9]+$/.test(jiraKey)) {\n  errors.push('jiraKey must match ^AUTO-[0-9]+$');\n}\nif (typeof fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(fingerprint)) {\n  errors.push('fingerprint must be exactly 64 hex characters');\n}\nif (typeof branchName !== 'string' || (typeof jiraKey === 'string' && branchName !== ('autofix/' + jiraKey))) {\n  errors.push('branchName must equal autofix/<jiraKey>');\n}\n\nreturn {\n  json: {\n    authValid,\n    fieldsValid: errors.length === 0,\n    errors,\n    incidentId,\n    jiraKey,\n    fingerprint,\n    branchName,\n  },\n};"
+      }
+    },
+    {
+      "id": "n05-auth-valid",
+      "name": "Auth Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1920,
+        400
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n05-auth-valid-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.authValid }}",
+              "rightValue": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n05-respond-unauthorized",
+      "name": "Respond Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -1680,
+        640
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 401
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"retryable\": false, \"errorCode\": \"UNAUTHORIZED\", \"message\": \"invalid or missing X-AutoFix-Runner-Token\" } }}"
+      }
+    },
+    {
+      "id": "n05-fields-valid",
+      "name": "Fields Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1680,
+        300
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n05-fields-valid-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.fieldsValid }}",
+              "rightValue": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n05-respond-invalid-request",
+      "name": "Respond Invalid Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -1440,
+        500
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 400
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"retryable\": false, \"errorCode\": \"INVALID_REQUEST\", \"errors\": $json.errors } }}"
+      }
+    },
+    {
+      "id": "n05-get-jira-issue",
+      "name": "Get Jira Issue",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        -1440,
+        160
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "issueKey": "={{ $('Validate Request').first().json.jiraKey }}",
+        "resource": "issue",
+        "operation": "get",
+        "jiraVersion": "cloud"
+      },
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "id": "n05-classify-issue-fetch",
+      "name": "Classify Issue Fetch Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $json;\nif (item.error) {\n  const message = typeof item.error === 'string' ? item.error : (item.error.message || JSON.stringify(item.error));\n  const isNotFound = /404|does not exist|no issue found|issue does not exist|could not be found|not found/i.test(message);\n  return {\n    json: {\n      fetchOk: false,\n      errorCode: isNotFound ? 'JIRA_ISSUE_NOT_FOUND' : 'JIRA_UNAVAILABLE',\n      httpStatus: isNotFound ? 404 : 503,\n      message,\n    },\n  };\n}\nreturn { json: { fetchOk: true, issue: item } };"
+      }
+    },
+    {
+      "id": "n05-issue-fetch-ok",
+      "name": "Issue Fetch OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -960,
+        160
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n05-issue-fetch-ok-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.fetchOk }}",
+              "rightValue": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n05-issue-not-found",
+      "name": "Issue Not Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -960,
+        460
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n05-issue-not-found-cond",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.errorCode }}",
+              "rightValue": "JIRA_ISSUE_NOT_FOUND"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n05-respond-not-found",
+      "name": "Respond Not Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -720,
+        380
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 404
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"retryable\": false, \"errorCode\": \"JIRA_ISSUE_NOT_FOUND\", \"message\": $json.message } }}"
+      }
+    },
+    {
+      "id": "n05-respond-unavailable",
+      "name": "Respond Jira Unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -720,
+        560
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 503
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"retryable\": true, \"errorCode\": \"JIRA_UNAVAILABLE\", \"message\": $json.message } }}"
+      }
+    },
+    {
+      "id": "n05-get-jira-comments",
+      "name": "Get Jira Comments",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        40
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "issueKey": "={{ $('Validate Request').first().json.jiraKey }}",
+        "resource": "issueComment",
+        "operation": "getAll",
+        "returnAll": true,
+        "jiraVersion": "cloud"
+      },
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "id": "n05-parse-jira-adf",
+      "name": "Parse Jira ADF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const issue = $('Classify Issue Fetch Result').first().json.issue;\nconst commentItems = $input.all();\n\nfunction adfNodeToText(node) {\n  if (!node || typeof node !== 'object') return '';\n  const type = node.type;\n  const content = node.content || [];\n  if (type === 'text') return node.text || '';\n  if (type === 'hardBreak') return '\\n';\n  if (type === 'rule') return '\\n---\\n';\n  if (type === 'mention') {\n    const attrs = node.attrs || {};\n    return '@' + (attrs.text || attrs.id || 'mention');\n  }\n  if (type === 'inlineCard') {\n    const attrs = node.attrs || {};\n    return attrs.url || '';\n  }\n  if (type === 'codeBlock') {\n    const inner = content.map(adfNodeToText).join('');\n    return '\\n```\\n' + inner + '\\n```\\n';\n  }\n  if (type === 'listItem') {\n    const inner = content.map(adfNodeToText).join('');\n    return '- ' + inner.trim() + '\\n';\n  }\n  if (type === 'bulletList' || type === 'orderedList') {\n    return content.map(adfNodeToText).join('');\n  }\n  if (type === 'paragraph' || type === 'heading' || type === 'blockquote' || type === 'panel') {\n    const inner = content.map(adfNodeToText).join('');\n    return inner + '\\n';\n  }\n  if (type === 'table' || type === 'tableRow' || type === 'tableCell' || type === 'tableHeader') {\n    return content.map(adfNodeToText).join('');\n  }\n  if (type === 'doc') {\n    return content.map(adfNodeToText).join('');\n  }\n  // Unknown node type: best-effort recurse into content rather than fail.\n  return content.map(adfNodeToText).join('');\n}\n\nfunction adfToText(doc) {\n  if (doc === null || doc === undefined) return '';\n  if (typeof doc === 'string') return doc;\n  if (typeof doc !== 'object') return '';\n  let text = adfNodeToText(doc);\n  text = text.replace(/\\n{3,}/g, '\\n\\n');\n  return text.trim();\n}\n\nconst fields = issue.fields || {};\nconst descriptionText = adfToText(fields.description);\nconst comments = commentItems.map((item) => {\n  const body = item.json.body;\n  const bodyText = adfToText(body).trim();\n  return { bodyText };\n});\n\nreturn {\n  json: {\n    key: issue.key,\n    summary: fields.summary || '',\n    descriptionText,\n    labels: fields.labels || [],\n    status: (fields.status || {}).name || '',\n    issueType: (fields.issuetype || {}).name || '',\n    projectKey: (fields.project || {}).key || '',\n    priority: (fields.priority || {}).name || '',\n    updatedAt: fields.updated || '',\n    comments,\n  },\n};"
+      }
+    },
+    {
+      "id": "n05-extract-context",
+      "name": "Extract AutoFix Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const parsed = $json;\nconst MARKER_START = 'AUTOFIX_CONTEXT_V1';\nconst MARKER_END = 'AUTOFIX_CONTEXT_END';\nconst APPROVED_MARKER = '[AUTOFIX_AGENT_CONTEXT]';\n\nconst text = parsed.descriptionText || '';\nconst startIdx = text.indexOf(MARKER_START);\nconst endIdx = text.indexOf(MARKER_END);\n\nif (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {\n  return {\n    json: {\n      ...parsed,\n      contextExtracted: false,\n      httpStatus: 422,\n      errorCode: 'UNSUPPORTED_JIRA_CONTEXT',\n      errorMessage: 'AUTOFIX_CONTEXT_V1 markers not found in description',\n    },\n  };\n}\n\nlet jsonBlock = text.slice(startIdx + MARKER_START.length, endIdx).trim();\njsonBlock = jsonBlock.replace(/^```(?:json)?\\s*/i, '').replace(/```\\s*$/, '').trim();\n\nlet autofixContext;\ntry {\n  autofixContext = JSON.parse(jsonBlock);\n} catch (e) {\n  return {\n    json: {\n      ...parsed,\n      contextExtracted: false,\n      httpStatus: 422,\n      errorCode: 'INVALID_AUTOFIX_CONTEXT_JSON',\n      errorMessage: 'AUTOFIX_CONTEXT_V1 block is not valid JSON: ' + e.message,\n    },\n  };\n}\n\nconst approvedAgentContext = (parsed.comments || [])\n  .map((c) => c.bodyText || '')\n  .filter((t) => t.startsWith(APPROVED_MARKER))\n  .map((t) => t.slice(APPROVED_MARKER.length).trim())\n  .filter((t) => t.length > 0);\n\nreturn {\n  json: {\n    ...parsed,\n    autofixContext,\n    approvedAgentContext,\n    contextExtracted: true,\n  },\n};"
+      }
+    },
+    {
+      "id": "n05-context-extracted-ok",
+      "name": "Context Extracted OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        0,
+        40
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n05-context-extracted-ok-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.contextExtracted }}",
+              "rightValue": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n05-respond-unsupported-context",
+      "name": "Respond Invalid Context Format",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 422
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"retryable\": false, \"errorCode\": $json.errorCode, \"message\": $json.errorMessage } }}"
+      }
+    },
+    {
+      "id": "n05-validate-ticket-context",
+      "name": "Validate Ticket Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $json;\nconst request = $('Validate Request').first().json;\nconst autofixContext = ctx.autofixContext || {};\n\nconst ALLOWED_SERVICES = ['autofix-demo-service'];\nconst ALLOWED_ENVIRONMENTS = ['local'];\nconst ALLOWED_EXCEPTION_TYPES = ['java.lang.NullPointerException'];\nconst ALLOWED_REQUEST_PATHS = ['/api/customers/200/display-name'];\nconst CLOSED_STATUSES = ['Done', 'Closed', 'Cancelled'];\nconst REQUIRED_LABELS = ['auto-generated', 'autofix-candidate'];\n\nconst reasons = [];\n\nif (ctx.key !== request.jiraKey) reasons.push('ticket key mismatch: ' + ctx.key + ' != ' + request.jiraKey);\nif (ctx.projectKey !== 'AUTO') reasons.push('unsupported project: ' + ctx.projectKey);\nif (CLOSED_STATUSES.includes(ctx.status)) reasons.push('ticket status is closed: ' + ctx.status);\n\nfor (const label of REQUIRED_LABELS) {\n  if (!(ctx.labels || []).includes(label)) reasons.push('required label missing: ' + label);\n}\n\nconst fingerprintLabel = (ctx.labels || []).find((l) => l.startsWith('autofix-fp-'));\nif (!fingerprintLabel) reasons.push('fingerprint label missing');\n\nif (autofixContext.schemaVersion !== 1) reasons.push('unsupported schemaVersion: ' + autofixContext.schemaVersion);\nif (String(autofixContext.incidentId) !== String(request.incidentId)) reasons.push('incidentId mismatch: ' + autofixContext.incidentId + ' != ' + request.incidentId);\nif (autofixContext.fingerprint !== request.fingerprint) reasons.push('fingerprint mismatch: context has ' + autofixContext.fingerprint);\nif (fingerprintLabel && fingerprintLabel !== ('autofix-fp-' + request.fingerprint)) reasons.push('fingerprint label mismatch: ' + fingerprintLabel);\n\nif (!ALLOWED_SERVICES.includes(autofixContext.service)) reasons.push('unsupported service: ' + autofixContext.service);\nif (!ALLOWED_ENVIRONMENTS.includes(autofixContext.environment)) reasons.push('unsupported environment: ' + autofixContext.environment);\nif (!ALLOWED_EXCEPTION_TYPES.includes(autofixContext.exceptionType)) reasons.push('unsupported exceptionType: ' + autofixContext.exceptionType);\nif (!ALLOWED_REQUEST_PATHS.includes(autofixContext.requestPath)) reasons.push('unsupported requestPath: ' + autofixContext.requestPath);\nif (!autofixContext.stackTrace) reasons.push('stackTrace is empty');\n\nif (request.branchName !== ('autofix/' + request.jiraKey)) reasons.push('branchName does not match autofix/<jiraKey>');\n\nreturn {\n  json: {\n    ...ctx,\n    contextValid: reasons.length === 0,\n    validationReasons: reasons,\n  },\n};"
+      }
+    },
+    {
+      "id": "n05-ticket-context-valid",
+      "name": "Ticket Context Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        480,
+        40
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n05-ticket-context-valid-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.contextValid }}",
+              "rightValue": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n05-respond-invalid-context",
+      "name": "Respond Invalid Jira Context",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        720,
+        300
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 422
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"retryable\": false, \"errorCode\": \"INVALID_JIRA_CONTEXT\", \"message\": $json.validationReasons.join('; ') } }}"
+      }
+    },
+    {
+      "id": "n05-build-sanitized-response",
+      "name": "Build Sanitized Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $json;\nconst autofixContext = ctx.autofixContext || {};\nconst request = $('Validate Request').first().json;\n\nfunction truncate(str, max) {\n  const s = String(str === undefined || str === null ? '' : str);\n  return s.length > max ? s.slice(0, max) + '...[truncated]' : s;\n}\nfunction stripControlChars(str) {\n  return String(str === undefined || str === null ? '' : str).replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/g, '');\n}\nfunction normalizeText(str, max) {\n  const s = stripControlChars(str).replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');\n  return truncate(s, max);\n}\n\nconst summary = normalizeText(ctx.summary, 300);\nconst normalizedMessage = normalizeText(autofixContext.normalizedMessage, 2000);\nconst applicationFrame = normalizeText(autofixContext.applicationFrame, 1000);\nconst stackTrace = normalizeText(autofixContext.stackTrace, 12000);\n\nlet approvedAgentContext = (ctx.approvedAgentContext || []).map((c) => normalizeText(c, 2000));\nlet totalLen = 0;\nconst cappedComments = [];\nfor (const c of approvedAgentContext) {\n  if (totalLen + c.length > 6000) break;\n  cappedComments.push(c);\n  totalLen += c.length;\n}\napprovedAgentContext = cappedComments;\n\nconst responseBody = {\n  schemaVersion: 1,\n  source: 'JIRA_VIA_N8N',\n  fetchedAt: new Date().toISOString(),\n  ticket: {\n    key: ctx.key,\n    summary,\n    projectKey: ctx.projectKey,\n    issueType: ctx.issueType,\n    status: ctx.status,\n    priority: ctx.priority,\n    updatedAt: ctx.updatedAt,\n    labels: ctx.labels,\n  },\n  incident: {\n    incidentId: request.incidentId,\n    fingerprint: request.fingerprint,\n    service: autofixContext.service,\n    environment: autofixContext.environment,\n    exceptionType: autofixContext.exceptionType,\n    normalizedMessage,\n    applicationFrame,\n    httpMethod: autofixContext.httpMethod,\n    requestPath: autofixContext.requestPath,\n    occurrenceCount: autofixContext.occurrenceCount,\n    firstSeenAt: autofixContext.firstSeenAt,\n    lastSeenAt: autofixContext.lastSeenAt,\n    sampleCorrelationId: autofixContext.sampleCorrelationId,\n    stackTrace,\n  },\n  approvedAgentContext,\n};\n\nconst hashInput = [\n  ctx.key,\n  summary,\n  request.fingerprint,\n  autofixContext.service,\n  autofixContext.environment,\n  autofixContext.exceptionType,\n  normalizedMessage,\n  applicationFrame,\n  autofixContext.httpMethod,\n  autofixContext.requestPath,\n  stackTrace,\n  approvedAgentContext.join('\\n'),\n  ctx.updatedAt,\n].join('|');\n\nreturn {\n  json: {\n    responseBody,\n    hashInput,\n  },\n};"
+      }
+    },
+    {
+      "id": "n05-compute-context-hash",
+      "name": "Compute Context Hash",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        960,
+        40
+      ],
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.hashInput }}",
+        "dataPropertyName": "contextHash",
+        "encoding": "hex"
+      }
+    },
+    {
+      "id": "n05-finalize-response",
+      "name": "Finalize Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $json;\nconst responseBody = { ...item.responseBody, contextHash: item.contextHash };\nreturn { json: responseBody };"
+      }
+    },
+    {
+      "id": "n05-respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1440,
+        40
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        },
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      }
+    }
+  ],
+  "pinData": {},
+  "settings": {},
+  "staticData": null,
+  "id": "wf05ticketcontext01"
+}
