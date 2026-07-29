@@ -110,6 +110,91 @@ docker run \
   autofix-demo-service:local
 ```
 
+## Stage 3B: Elasticsearch polling and incident deduplication
+
+An n8n workflow (`infrastructure/n8n/workflows/01-detect-and-deduplicate-errors.json`)
+polls Elasticsearch for `ERROR` events, normalizes each error, computes a
+SHA-256 fingerprint, and atomically claims/upserts an `autofix.incident` row
+in PostgreSQL:
+
+```
+Manual Trigger ──────────┐
+                          ▼
+Schedule Trigger → Search Elasticsearch
+                          ↓
+                Split Elasticsearch Hits
+                          ↓
+                   Normalize Error
+                          ↓
+                Calculate Fingerprint
+                          ↓
+                 Claim & Upsert Incident
+                          ↓
+                  Is New Incident?
+                   ├── true  → New Incident
+                   └── false → Existing Incident
+```
+
+**Fingerprint composition:** `service + environment + exceptionType +
+normalizedExceptionMessage + firstApplicationStackFrame + requestPath`.
+Timestamps, correlation IDs, customer IDs, Elasticsearch document IDs, and
+Java line numbers are intentionally excluded so identical logical errors
+collapse into one incident.
+
+**Deduplication is two-layered:**
+- `autofix.processed_log_event` — has this specific Elasticsearch document
+  already been handled? (keyed on `elasticsearch_id`)
+- `autofix.incident` — has this logical error been seen before? (keyed on
+  `fingerprint`; increments `occurrence_count` instead of creating a
+  duplicate incident)
+
+Both writes happen in one SQL statement (`Claim & Upsert Incident` node), so
+a failed incident upsert also rolls back the processed-event claim — a
+document is never silently marked "processed" without a corresponding
+incident.
+
+### Import the workflow
+
+```bash
+docker cp infrastructure/n8n/workflows/01-detect-and-deduplicate-errors.json autofix-n8n:/tmp/workflow.json
+docker exec autofix-n8n n8n import:workflow --input=/tmp/workflow.json
+```
+
+### Verified test results (headless, via `n8n execute` CLI)
+
+- **Test A** (one error): 1 `incident` row, 1 `processed_log_event` row,
+  `occurrence_count = 1`, `status = DETECTED`, fingerprint is a 64-char hex
+  SHA-256 string.
+- **Test B** (re-run, no new errors): counts unchanged; the Postgres node
+  emits zero output items for the already-processed document.
+- **Test C** (5 identical bulk errors): the 5 documents collapse into a
+  single incident with `occurrence_count = 5`; `processed_log_event` grows
+  by 5.
+  - Note: in this POC, `GET /api/customers/.../display-name` and
+    `POST /api/demo/generate-errors` produce different `requestPath`
+    values (and the bulk endpoint's log line doesn't include
+    `requestPath`/`httpMethod` at all), so they fingerprint as two
+    *separate* incidents rather than one. This is expected given the
+    fingerprint definition above — request path is intentionally part of
+    the fingerprint — not a workflow defect.
+
+### Activating the schedule
+
+n8n 2.x tracks trigger activation through its own workflow-publication
+pipeline (`workflow_history` / `workflow_published_version` /
+`workflow_publication_trigger_status`), not a simple boolean flag, so this
+must be toggled from the UI rather than by editing the database directly:
+
+1. Open the workflow in n8n.
+2. Toggle **Active** (top right).
+3. Confirm new `execution_entity` rows appear with `mode = trigger` roughly
+   once a minute.
+
+Current POC limits: 15-minute lookback window, 100 documents per run,
+single n8n instance. A persistent cursor (`search_after` / last-seen
+timestamp) will replace the overlapping time-window approach in a later
+stage.
+
 ## Scope of this stage
 
 Not included at this stage: database, Kafka, Kubernetes, authentication,
