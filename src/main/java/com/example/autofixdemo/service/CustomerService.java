@@ -21,8 +21,9 @@ public class CustomerService {
         // NOTE: firstName is not null-checked here. Customer "200" has a null
         // firstName by design, so this call deterministically throws a
         // NullPointerException. This is the controlled demo error scenario.
-        return customer.firstName().trim()
-                + " "
-                + customer.lastName().trim();
+        String firstName = customer.firstName() == null ? "" : customer.firstName().trim();
+        String lastName = customer.lastName() == null ? "" : customer.lastName().trim();
+
+        return (firstName + " " + lastName).trim();
     }
 }
