@@ -42,3 +42,6 @@ bin/
 ### Logs ###
 logs/
 *.log
+
+# Stage 3: local secrets, never commit
+infrastructure/.env
