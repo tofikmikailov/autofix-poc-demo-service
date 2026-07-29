@@ -18,3 +18,7 @@ management:
 
 app:
   environment: ${APP_ENVIRONMENT:local}
+
+  logging:
+    logstash:
+      destination: ${LOGSTASH_DESTINATION:localhost:5000}

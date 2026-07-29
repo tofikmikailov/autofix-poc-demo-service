@@ -3,6 +3,7 @@
 
     <springProperty scope="context" name="serviceName" source="spring.application.name" defaultValue="autofix-demo-service"/>
     <springProperty scope="context" name="appEnvironment" source="app.environment" defaultValue="local"/>
+    <springProperty scope="context" name="logstashDestination" source="app.logging.logstash.destination" defaultValue="localhost:5000"/>
 
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
@@ -16,8 +17,33 @@
         </encoder>
     </appender>
 
-    <root level="INFO">
-        <appender-ref ref="STDOUT"/>
-    </root>
+    <appender name="LOGSTASH_TCP" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+        <destination>${logstashDestination}</destination>
+
+        <keepAliveDuration>5 minutes</keepAliveDuration>
+
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeContext>false</includeContext>
+            <fieldNames>
+                <logger>logger</logger>
+                <thread>thread</thread>
+                <stackTrace>stackTrace</stackTrace>
+            </fieldNames>
+            <customFields>{"service":"${serviceName}","environment":"${appEnvironment}"}</customFields>
+        </encoder>
+    </appender>
+
+    <springProfile name="elk">
+        <root level="INFO">
+            <appender-ref ref="STDOUT"/>
+            <appender-ref ref="LOGSTASH_TCP"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!elk">
+        <root level="INFO">
+            <appender-ref ref="STDOUT"/>
+        </root>
+    </springProfile>
 
 </configuration>

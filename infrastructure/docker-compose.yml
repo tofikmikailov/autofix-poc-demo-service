@@ -1,0 +1,62 @@
+services:
+  elasticsearch:
+    image: elasticsearch:9.4.4
+    container_name: autofix-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail http://localhost:9200/_cluster/health || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - autofix-network
+
+  kibana:
+    image: kibana:9.4.4
+    container_name: autofix-kibana
+    environment:
+      ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
+      XPACK_SECURITY_ENABLED: "false"
+      NODE_OPTIONS: "--max-old-space-size=1024"
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - autofix-network
+
+  logstash:
+    image: logstash:9.4.4
+    container_name: autofix-logstash
+    environment:
+      XPACK_MONITORING_ENABLED: "false"
+      LS_JAVA_OPTS: "-Xms256m -Xmx256m"
+    ports:
+      - "127.0.0.1:5000:5000"
+      - "127.0.0.1:9600:9600"
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - autofix-network
+
+volumes:
+  elasticsearch-data:
+
+networks:
+  autofix-network:
+    name: autofix-network
