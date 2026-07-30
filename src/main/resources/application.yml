@@ -1,9 +1,11 @@
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${SERVER_PORT:8066}
 
 spring:
   application:
     name: ${SPRING_APPLICATION_NAME:autofix-demo-service}
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:elk}
 
 management:
   endpoints:
