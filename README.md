@@ -881,9 +881,11 @@ since been resolved and closed.
   CREATE UNIQUE INDEX idx_incident_fingerprint_active
       ON autofix.incident (fingerprint)
       WHERE status NOT IN (
-          'REVIEW', 'HUMAN_REQUIRED', 'AGENT_FAILED', 'COMPLETED', 'FAILED'
+          'REVIEW', 'AGENT_FAILED', 'COMPLETED', 'FAILED'
       );
   ```
+  (`HUMAN_REQUIRED` was in this list originally but was removed by
+  **`007-do-not-reopen-human-required.sql`** — see below.)
   Uniqueness is now enforced only among *active* (still in-flight)
   incidents. Once an incident reaches one of the terminal statuses
   above, it stops participating in the uniqueness check, so it no
@@ -919,6 +921,43 @@ incident (13, `AUTO-10`) reached `REVIEW` produced a new, independent
 incident row with its own distinct Jira ticket (`AUTO-12`) and its own
 full AutoFix cycle, rather than re-linking to the closed `AUTO-10`
 ticket.
+
+### Follow-up: `HUMAN_REQUIRED` must not be treated as terminal
+
+Bug found live: an exception type rejected by Workflow 03's Policy
+Gate (e.g. `NoResourceFoundException` for `GET /favicon.ico`) lands in
+`HUMAN_REQUIRED` on **every single occurrence** — the policy allow-list
+never changes, so Policy Gate rejects it again and again forever.
+Nobody actually resolves this ticket in Jira; it just sits in the
+backlog untouched. Because the original migration 006 excluded
+`HUMAN_REQUIRED` from the active-uniqueness index, each new occurrence
+of such a permanently-rejected fingerprint created a **brand-new** Jira
+ticket (`AUTO-11`, `AUTO-13`, `AUTO-15`, ... one per occurrence) instead
+of bumping `occurrence_count` on the existing open ticket — pure ticket
+spam for a class of error that will never progress past
+`HUMAN_REQUIRED`.
+
+**`infrastructure/postgres/init/007-do-not-reopen-human-required.sql`**
+removes `HUMAN_REQUIRED` from the terminal-status list, so it is now
+treated as an *active* status for reopen purposes:
+
+```sql
+CREATE UNIQUE INDEX idx_incident_fingerprint_active
+    ON autofix.incident (fingerprint)
+    WHERE status NOT IN (
+        'REVIEW', 'AGENT_FAILED', 'COMPLETED', 'FAILED'
+    );
+```
+
+`REVIEW`/`AGENT_FAILED` remain terminal — those genuinely represent a
+concluded automated lifecycle (fix proposed for human review, or agent
+retries exhausted). `HUMAN_REQUIRED` from a policy rejection is
+different: it's a standing, unresolved backlog item, not a concluded
+one, so recurrences now keep accumulating `occurrence_count` on the
+same open ticket instead of spawning duplicates. Workflow 01's
+`ON CONFLICT` clause was updated to match. Live duplicate incidents that
+had already been created for the same favicon fingerprint were merged
+into a single row before recreating the index.
 
 ## Scope of Stage 8
 
