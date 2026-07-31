@@ -959,6 +959,52 @@ same open ticket instead of spawning duplicates. Workflow 01's
 had already been created for the same favicon fingerprint were merged
 into a single row before recreating the index.
 
+### Follow-up: `REVIEW` must not be treated as terminal either
+
+Second bug found live: incident 26 (`AUTO-16`) reached `REVIEW` (agent
+opened PR #14, awaiting human merge). The exact same NPE was
+retriggered a few minutes later, **before the PR had been merged** —
+the bug was still live and unfixed in the codebase. Because `REVIEW`
+was in the terminal-status list (migrations 006/007), the recurrence
+did not bump `occurrence_count` on incident 26; it spawned a brand-new
+incident (28, `AUTO-17`) with its own duplicate PR (#15) for the
+identical, still-unfixed bug.
+
+`REVIEW` means "a PR is open, awaiting human review/merge" — it is not
+a concluded lifecycle. This system does not poll GitHub to know when a
+PR merges, so until a human confirms otherwise, any recurrence while
+still in `REVIEW` is the *same* open issue, not a new one.
+
+**`infrastructure/postgres/init/008-do-not-reopen-review.sql`** removes
+`REVIEW` from the terminal-status list too:
+
+```sql
+CREATE UNIQUE INDEX idx_incident_fingerprint_active
+    ON autofix.incident (fingerprint)
+    WHERE status NOT IN (
+        'AGENT_FAILED', 'COMPLETED', 'FAILED'
+    );
+```
+
+`AGENT_FAILED` is now the only realistic terminal status in this table
+— agent retries genuinely exhausted with no PR ever produced. Workflow
+01's `ON CONFLICT` clause was updated to match. Live duplicate
+incidents sharing the demo NPE fingerprint (across several repeated
+test runs) were consolidated into a single row before recreating the
+index.
+
+**Practical implication**: while a fix is pending review (`REVIEW`),
+retriggering the same error just bumps `occurrence_count` on the
+existing ticket/incident — no new ticket, no new AutoFix cycle — for
+as long as that PR sits open. The only way a fresh occurrence spawns a
+brand-new incident today is after `AGENT_FAILED` (agent gave up).
+There is still no notion of "PR was merged, error is now truly gone" —
+merging the PR does not change `incident.status` back away from
+`REVIEW`, so a recurrence after a successful merge would still just
+bump the old (already-fixed) incident's `occurrence_count` rather than
+opening a fresh one. This is an accepted limitation for this PoC (see
+Scope below), not something silently swept under the rug.
+
 ## Scope of Stage 8
 
 Not included at this stage: syncing PostgreSQL's `status` back from
