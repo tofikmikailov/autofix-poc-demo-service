@@ -16,6 +16,11 @@
 #   - all URLs (no --allow-url is ever passed)
 #   - the ask_user tool (nothing interactive can happen; --no-ask-user)
 #
+# Ported unchanged from agent-runner/lib/run-copilot.sh for the
+# containerized agent -- the sandbox rules are identical, "worktree-dir"
+# is simply the container's single cloned repo checkout instead of a
+# host git-worktree.
+#
 # Usage:
 #   run-copilot.sh <worktree-dir> <prompt-file> <log-file>
 #

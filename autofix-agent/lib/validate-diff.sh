@@ -8,6 +8,12 @@
 # the actual working-tree state and its own test run — it does not read
 # any Copilot output/report.
 #
+# Ported unchanged from agent-runner/lib/validate-diff.sh -- same
+# Validation Gate rules run inside the container. The JDK is pinned by
+# the Dockerfile (JDK 21), so the java_home resolution chain below is
+# mostly a no-op here, but is kept intact so this script stays
+# drop-in-compatible if run outside the container image too.
+#
 # Usage:
 #   validate.sh <worktree-dir> [--allow-readme]
 #

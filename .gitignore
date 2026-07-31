@@ -53,3 +53,10 @@ agent-runner/results/
 agent-runner/worktrees/
 agent-runner/locks/
 agent-runner/*.pid
+
+# Containerized AutoFix Agent: local build/test artifacts only -- the
+# real runtime workspace lives in the autofix-agent-workspace Docker
+# volume, never on the host.
+autofix-agent/.env
+
+__pycache__/

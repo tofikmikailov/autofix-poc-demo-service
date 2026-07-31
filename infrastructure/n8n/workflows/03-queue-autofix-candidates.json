@@ -8,6 +8,11 @@
             "node": "Select JIRA_CREATED Incident",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Reclaim Stuck AGENT_RUNNING",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -17,6 +22,11 @@
         [
           {
             "node": "Select JIRA_CREATED Incident",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Reclaim Stuck AGENT_RUNNING",
             "type": "main",
             "index": 0
           }
@@ -42,8 +52,7 @@
             "type": "main",
             "index": 0
           }
-        ],
-        []
+        ]
       ]
     },
     "Policy Gate": {
@@ -74,6 +83,149 @@
           }
         ]
       ]
+    },
+    "Reclaim Stuck AGENT_RUNNING": {
+      "main": [
+        [
+          {
+            "node": "Claim AGENT_PENDING Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim AGENT_PENDING Job": {
+      "main": [
+        [
+          {
+            "node": "Job Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ticket Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Ticket Context": {
+      "main": [
+        [
+          {
+            "node": "Ticket Context Fetched OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ticket Context Fetched OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Agent Job Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Decide Ticket-Fetch Retry Or Terminal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Ticket-Fetch Retry Or Terminal": {
+      "main": [
+        [
+          {
+            "node": "Ticket-Fetch Terminal?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ticket-Fetch Terminal?": {
+      "main": [
+        [
+          {
+            "node": "Set Incident AGENT_FAILED (Ctx Fetch)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry Incident (Ctx Fetch Backoff)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Agent Job Payload": {
+      "main": [
+        [
+          {
+            "node": "Dispatch To AutoFix Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch To AutoFix Agent": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Accepted?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dispatch Busy Or Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Busy Or Failed?": {
+      "main": [
+        [
+          {
+            "node": "Revert To AGENT_PENDING (Busy)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Incident HUMAN_REQUIRED (Dispatch Failed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "name": "03 - Queue AutoFix Candidates",
@@ -85,7 +237,7 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        -1200,
+        -1600,
         208
       ]
     },
@@ -105,8 +257,8 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
-        -1200,
-        368
+        -1600,
+        448
       ]
     },
     {
@@ -122,8 +274,8 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        -960,
-        288
+        -1360,
+        128
       ],
       "alwaysOutputData": false,
       "credentials": {
@@ -163,8 +315,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        -720,
-        288
+        -1120,
+        128
       ]
     },
     {
@@ -177,8 +329,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -480,
-        208
+        -880,
+        48
       ]
     },
     {
@@ -211,8 +363,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        -240,
-        208
+        -640,
+        48
       ]
     },
     {
@@ -228,8 +380,8 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        0,
-        128
+        -400,
+        -32
       ],
       "credentials": {
         "postgres": {
@@ -251,7 +403,410 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        0,
+        -400,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'AGENT_PENDING',\n    agent_claimed_at = NULL,\n    agent_last_error = 'LEASE_EXPIRED: previous agent run exceeded ' || $1 || ' minute lease and was reclaimed',\n    updated_at = NOW()\nWHERE status = 'AGENT_RUNNING'\n  AND agent_claimed_at < NOW() - ($1 || ' minutes')::interval\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $env.AUTOFIX_AGENT_LEASE_MINUTES || '30' ] }}"
+        }
+      },
+      "id": "n03-reclaim-stuck",
+      "name": "Reclaim Stuck AGENT_RUNNING",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1360,
+        448
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH claimable AS (\n    SELECT id\n    FROM autofix.incident\n    WHERE status = 'AGENT_PENDING'\n      AND (agent_next_attempt_at IS NULL OR agent_next_attempt_at <= NOW())\n    ORDER BY created_at\n    FOR UPDATE SKIP LOCKED\n    LIMIT 1\n),\nclaimed AS (\n    UPDATE autofix.incident i\n    SET status = 'AGENT_RUNNING',\n        agent_claimed_at = NOW(),\n        agent_started_at = NOW(),\n        agent_attempt_count = i.agent_attempt_count + 1,\n        agent_job_id = 'autofix-' || i.id || '-' || (i.agent_attempt_count + 1),\n        agent_last_error = NULL,\n        updated_at = NOW()\n    FROM claimable\n    WHERE i.id = claimable.id\n    RETURNING i.id AS \"incidentId\", i.jira_key AS \"jiraKey\",\n              i.fingerprint, i.branch_name AS \"branchName\",\n              i.agent_attempt_count AS \"agentAttemptCount\",\n              i.agent_job_id AS \"jobId\"\n)\nSELECT * FROM claimed;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "n03-claim-job",
+      "name": "Claim AGENT_PENDING Job",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1120,
+        448
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "n03-cond-claimed",
+              "leftValue": "={{ $json.incidentId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-job-claimed",
+      "name": "Job Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -880,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/webhook/autofix/ticket-context",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { incidentId: Number($json.incidentId), jiraKey: $json.jiraKey, fingerprint: $json.fingerprint, branchName: $json.branchName } }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Autofix-Runner-Token",
+              "value": "={{ $env.AUTOFIX_RUNNER_WEBHOOK_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "n03-fetch-ticket-context",
+      "name": "Fetch Ticket Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -640,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "n03-cond-ctx-ok",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-ctx-fetch-ok",
+      "name": "Ticket Context Fetched OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -400,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const claim = $('Claim AGENT_PENDING Job').first().json;\nconst response = $('Fetch Ticket Context').first().json;\nconst attempt = claim.agentAttemptCount;\n\nconst backoffByAttempt = { 1: '1 minute', 2: '5 minutes', 3: '15 minutes' };\nconst backoff = backoffByAttempt[attempt] || null;\nconst terminal = attempt >= 3;\n\nconst statusCode = response.statusCode;\nconst reason = `TICKET_CONTEXT_FETCH_FAILED: workflow 05 responded HTTP ${statusCode} (attempt ${attempt})`;\n\nreturn {\n  json: {\n    incidentId: claim.incidentId,\n    jiraKey: claim.jiraKey,\n    terminal,\n    backoff,\n    reason,\n  },\n};\n"
+      },
+      "id": "n03-decide-ctx-retry",
+      "name": "Decide Ticket-Fetch Retry Or Terminal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "n03-cond-ctx-terminal",
+              "leftValue": "={{ $json.terminal }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-ctx-terminal",
+      "name": "Ticket-Fetch Terminal?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        80,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'AGENT_FAILED',\n    agent_last_error = $2,\n    agent_completed_at = NOW(),\n    agent_claimed_at = NULL,\n    agent_next_attempt_at = NULL,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status, agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $json.incidentId, $json.reason ] }}"
+        }
+      },
+      "id": "n03-set-agent-failed-ctx",
+      "name": "Set Incident AGENT_FAILED (Ctx Fetch)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        320,
+        480
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'AGENT_PENDING',\n    agent_claimed_at = NULL,\n    agent_job_id = NULL,\n    agent_next_attempt_at = NOW() + ($2)::interval,\n    agent_last_error = $3,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status, agent_next_attempt_at, agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $json.incidentId, $json.backoff, $json.reason ] }}"
+        }
+      },
+      "id": "n03-retry-ctx",
+      "name": "Retry Incident (Ctx Fetch Backoff)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        320,
+        640
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const claim = $('Claim AGENT_PENDING Job').first().json;\nconst ctx = $json.body || $json;\nconst ticket = ctx.ticket || {};\nconst incident = ctx.incident || {};\n\nconst ticketContext = {\n  summary: ticket.summary || '',\n  service: incident.service || '',\n  environment: incident.environment || '',\n  exceptionType: incident.exceptionType || '',\n  normalizedMessage: incident.normalizedMessage || '',\n  applicationFrame: incident.applicationFrame || '',\n  httpMethod: incident.httpMethod || '',\n  requestPath: incident.requestPath || '',\n  stackTrace: incident.stackTrace || '',\n  approvedAgentContext: ctx.approvedAgentContext || [],\n};\n\nreturn {\n  json: {\n    schemaVersion: 1,\n    jobId: claim.jobId,\n    incidentId: Number(claim.incidentId),\n    jiraKey: claim.jiraKey,\n    fingerprint: claim.fingerprint,\n    branchName: claim.branchName,\n    contextHash: ctx.contextHash,\n    ticketContext,\n  },\n};\n"
+      },
+      "id": "n03-build-job-payload",
+      "name": "Build Agent Job Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://autofix-agent:8090/api/jobs",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AUTOFIX_AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "n03-dispatch-agent",
+      "name": "Dispatch To AutoFix Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        80,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "n03-cond-accepted",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 202,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-dispatch-accepted",
+      "name": "Dispatch Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        320,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "n03-cond-busy",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 409,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03-dispatch-busy",
+      "name": "Dispatch Busy Or Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        560,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'AGENT_PENDING',\n    agent_claimed_at = NULL,\n    agent_job_id = NULL,\n    agent_last_error = 'AGENT_BUSY: autofix-agent container was already processing another job',\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status;",
+        "options": {
+          "queryReplacement": "={{ [ $('Build Agent Job Payload').first().json.incidentId ] }}"
+        }
+      },
+      "id": "n03-revert-busy",
+      "name": "Revert To AGENT_PENDING (Busy)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        800,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'HUMAN_REQUIRED',\n    agent_last_error = $2,\n    agent_completed_at = NOW(),\n    agent_claimed_at = NULL,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status, agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $('Build Agent Job Payload').first().json.incidentId, 'DISPATCH_FAILED: autofix-agent responded HTTP ' + $json.statusCode ] }}"
+        }
+      },
+      "id": "n03-set-human-required-dispatch",
+      "name": "Set Incident HUMAN_REQUIRED (Dispatch Failed)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        800,
         320
       ],
       "credentials": {

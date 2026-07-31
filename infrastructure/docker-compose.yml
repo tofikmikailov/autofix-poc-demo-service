@@ -115,6 +115,12 @@ services:
       # Ticket Context"'s Validate Request node via {{ $env.AUTOFIX_RUNNER_WEBHOOK_TOKEN }}.
       # Not a Jira credential -- only authenticates the local Agent Runner.
       AUTOFIX_RUNNER_WEBHOOK_TOKEN: ${AUTOFIX_RUNNER_WEBHOOK_TOKEN}
+
+      # Containerized AutoFix Agent: bearer tokens used by Workflow 03's
+      # dispatch call (POST autofix-agent:8090/api/jobs) and validated by
+      # Workflow 04's callback (POST /webhook/autofix/agent-result).
+      AUTOFIX_AGENT_API_TOKEN: ${AUTOFIX_AGENT_API_TOKEN}
+      AUTOFIX_CALLBACK_TOKEN: ${AUTOFIX_CALLBACK_TOKEN}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
     ports:
       - "127.0.0.1:5678:5678"
@@ -128,10 +134,44 @@ services:
     networks:
       - autofix-network
 
+  autofix-agent:
+    build:
+      context: ../autofix-agent
+    container_name: autofix-agent
+    restart: unless-stopped
+    environment:
+      AUTOFIX_AGENT_API_TOKEN: ${AUTOFIX_AGENT_API_TOKEN}
+      AUTOFIX_CALLBACK_TOKEN: ${AUTOFIX_CALLBACK_TOKEN}
+      AUTOFIX_CALLBACK_URL: "http://n8n:5678/webhook/autofix/agent-result"
+      AUTOFIX_REPOSITORY_URL: ${AUTOFIX_REPOSITORY_URL}
+      AUTOFIX_REPOSITORY_OWNER: ${AUTOFIX_REPOSITORY_OWNER}
+      AUTOFIX_REPOSITORY_NAME: ${AUTOFIX_REPOSITORY_NAME}
+      AUTOFIX_BASE_BRANCH: ${AUTOFIX_BASE_BRANCH:-main}
+      GH_TOKEN: ${AUTOFIX_GITHUB_TOKEN}
+      COPILOT_GITHUB_TOKEN: ${AUTOFIX_COPILOT_TOKEN}
+    # No Jira/Postgres/Elasticsearch credentials, no Docker socket --
+    # this container only ever talks to GitHub and to n8n's callback URL.
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - autofix-agent-workspace:/workspace
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail http://localhost:8090/health || exit 1"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    networks:
+      - autofix-network
+
 volumes:
   elasticsearch-data:
   postgres-data:
   n8n-data:
+  autofix-agent-workspace:
 
 networks:
   autofix-network:

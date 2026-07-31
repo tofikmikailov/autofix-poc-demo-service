@@ -5,7 +5,36 @@
       "main": [
         [
           {
+            "node": "Verify Callback Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Callback Token": {
+      "main": [
+        [
+          {
+            "node": "Token Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token Valid?": {
+      "main": [
+        [
+          {
             "node": "Validate Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Unauthorized",
             "type": "main",
             "index": 0
           }
@@ -27,7 +56,7 @@
       "main": [
         [
           {
-            "node": "Verify Incident PR_READY",
+            "node": "Lookup Incident By Job ID",
             "type": "main",
             "index": 0
           }
@@ -41,29 +70,65 @@
         ]
       ]
     },
-    "Verify Incident PR_READY": {
+    "Lookup Incident By Job ID": {
       "main": [
         [
           {
-            "node": "Incident Is PR_READY?",
+            "node": "Incident Found?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Incident Is PR_READY?": {
+    "Incident Found?": {
       "main": [
         [
           {
-            "node": "Get Jira Issue",
+            "node": "Route By Status",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Respond Not PR_READY",
+            "node": "Respond Stale Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By Status": {
+      "main": [
+        [
+          {
+            "node": "Set Incident PR_READY",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Incident HUMAN_REQUIRED",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Decide Agent-Failed Retry Or Terminal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Incident PR_READY": {
+      "main": [
+        [
+          {
+            "node": "Get Jira Issue",
             "type": "main",
             "index": 0
           }
@@ -222,21 +287,83 @@
           }
         ]
       ]
+    },
+    "Update Incident HUMAN_REQUIRED": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Agent-Failed Retry Or Terminal": {
+      "main": [
+        [
+          {
+            "node": "Agent-Failed Terminal?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent-Failed Terminal?": {
+      "main": [
+        [
+          {
+            "node": "Set Incident AGENT_FAILED (Terminal)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry Incident (Agent-Failed Backoff)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Incident AGENT_FAILED (Terminal)": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Incident (Agent-Failed Backoff)": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "name": "04 - Finalize AutoFix Review",
+  "name": "04 - Finalize AutoFix Result",
   "nodes": [
     {
       "id": "n04-webhook",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "position": [
-        -1600,
+        -2000,
         400
       ],
-      "webhookId": "autofix-pr-ready",
+      "webhookId": "autofix-agent-result",
       "parameters": {
-        "path": "autofix/pr-ready",
+        "path": "autofix/agent-result",
         "options": {},
         "httpMethod": "POST",
         "responseMode": "responseNode"
@@ -244,16 +371,81 @@
       "typeVersion": 2
     },
     {
-      "id": "n04-validate-payload",
-      "name": "Validate Payload",
+      "id": "n04-verify-token",
+      "name": "Verify Callback Token",
       "type": "n8n-nodes-base.code",
       "position": [
-        -1360,
+        -1760,
         400
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const body = $json.body ?? $json;\n\nconst requiredFields = [\n  'incidentId', 'jiraKey', 'branchName', 'pullRequestNumber',\n  'pullRequestUrl', 'commitSha', 'testsPassed', 'changedFiles',\n  'addedLines', 'deletedLines',\n];\n\nconst errors = [];\nfor (const field of requiredFields) {\n  if (body[field] === undefined || body[field] === null || body[field] === '') {\n    errors.push(`missing field: ${field}`);\n  }\n}\n\nif (body.jiraKey !== undefined && typeof body.jiraKey !== 'string') {\n  errors.push('jiraKey must be a string');\n}\n\nreturn {\n  json: {\n    valid: errors.length === 0,\n    errors,\n    incidentId: body.incidentId,\n    jiraKey: body.jiraKey,\n    branchName: body.branchName,\n    pullRequestNumber: body.pullRequestNumber,\n    pullRequestUrl: body.pullRequestUrl,\n    commitSha: body.commitSha,\n    testsPassed: body.testsPassed,\n    changedFiles: body.changedFiles,\n    addedLines: body.addedLines,\n    deletedLines: body.deletedLines,\n    marker: body.jiraKey ? `[autofix-pr:${body.jiraKey}]` : null,\n  },\n};\n"
+        "jsCode": "const headers = $json.headers || {};\nconst body = $json.body || $json;\n\nconst expectedToken = $env.AUTOFIX_CALLBACK_TOKEN || '';\nconst authHeader = headers['authorization'] || '';\nconst receivedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';\n\nfunction timingSafeEqual(a, b) {\n  if (typeof a !== 'string' || typeof b !== 'string') return false;\n  if (a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) {\n    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  }\n  return diff === 0;\n}\n\nconst tokenValid = expectedToken.length > 0 && timingSafeEqual(receivedToken, expectedToken);\n\nreturn { json: { tokenValid, body } };\n"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n04-token-valid",
+      "name": "Token Valid?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        -1520,
+        400
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n04-cond-token-valid",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.tokenValid }}",
+              "rightValue": true
+            }
+          ]
+        }
+      },
+      "typeVersion": 2.3
+    },
+    {
+      "id": "n04-respond-unauthorized",
+      "name": "Respond Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        -1280,
+        640
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 401
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"errorCode\": \"INVALID_AGENT_TOKEN\" } }}"
+      },
+      "typeVersion": 1.4
+    },
+    {
+      "id": "n04-validate-payload",
+      "name": "Validate Payload",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -1280,
+        320
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $json.body;\n\nconst STATUSES = ['PR_READY', 'HUMAN_REQUIRED', 'AGENT_FAILED'];\nconst errors = [];\n\nconst commonFields = ['status', 'jobId', 'jiraKey', 'incidentId', 'contextHash'];\nfor (const field of commonFields) {\n  if (body[field] === undefined || body[field] === null || body[field] === '') {\n    errors.push(`missing field: ${field}`);\n  }\n}\nif (body.status !== undefined && !STATUSES.includes(body.status)) {\n  errors.push(`status must be one of ${STATUSES.join(', ')}`);\n}\n\nif (body.status === 'PR_READY') {\n  for (const field of ['prNumber', 'prUrl', 'commitSha', 'changedFiles', 'addedLines', 'deletedLines']) {\n    if (body[field] === undefined || body[field] === null || body[field] === '') {\n      errors.push(`missing PR_READY field: ${field}`);\n    }\n  }\n}\nif ((body.status === 'HUMAN_REQUIRED' || body.status === 'AGENT_FAILED') && !body.errorCode) {\n  errors.push('missing field: errorCode');\n}\n\nreturn {\n  json: {\n    valid: errors.length === 0,\n    errors,\n    status: body.status,\n    jobId: body.jobId,\n    jiraKey: body.jiraKey,\n    incidentId: Number(body.incidentId),\n    contextHash: body.contextHash,\n    prNumber: body.prNumber,\n    prUrl: body.prUrl,\n    commitSha: body.commitSha,\n    testsPassed: body.testsPassed,\n    changedFiles: body.changedFiles,\n    addedLines: body.addedLines,\n    deletedLines: body.deletedLines,\n    errorCode: body.errorCode,\n    errorMessage: body.errorMessage,\n    marker: body.jiraKey ? `[autofix-pr:${body.jiraKey}]` : null,\n  },\n};\n"
       },
       "typeVersion": 2
     },
@@ -262,8 +454,8 @@
       "name": "Payload Valid?",
       "type": "n8n-nodes-base.if",
       "position": [
-        -1120,
-        400
+        -1040,
+        320
       ],
       "parameters": {
         "options": {},
@@ -296,8 +488,8 @@
       "name": "Respond Invalid Payload",
       "type": "n8n-nodes-base.respondToWebhook",
       "position": [
-        -880,
-        560
+        -800,
+        480
       ],
       "parameters": {
         "options": {
@@ -309,19 +501,19 @@
       "typeVersion": 1.4
     },
     {
-      "id": "n04-verify-pr-ready",
-      "name": "Verify Incident PR_READY",
+      "id": "n04-lookup-incident",
+      "name": "Lookup Incident By Job ID",
       "type": "n8n-nodes-base.postgres",
       "position": [
-        -880,
-        260
+        -800,
+        240
       ],
       "parameters": {
-        "query": "SELECT id, status, jira_key, branch_name\nFROM autofix.incident\nWHERE id = $1\n  AND jira_key = $2\n  AND status = 'PR_READY';",
+        "operation": "executeQuery",
+        "query": "SELECT id, status, jira_key, branch_name, agent_attempt_count\nFROM autofix.incident\nWHERE id = $1\n  AND jira_key = $2\n  AND agent_job_id = $3\n  AND status = 'AGENT_RUNNING';",
         "options": {
-          "queryReplacement": "={{ [ $json.incidentId, $json.jiraKey ] }}"
-        },
-        "operation": "executeQuery"
+          "queryReplacement": "={{ [ $json.incidentId, $json.jiraKey, $json.jobId ] }}"
+        }
       },
       "credentials": {
         "postgres": {
@@ -333,12 +525,12 @@
       "alwaysOutputData": true
     },
     {
-      "id": "n04-incident-pr-ready",
-      "name": "Incident Is PR_READY?",
+      "id": "n04-incident-found",
+      "name": "Incident Found?",
       "type": "n8n-nodes-base.if",
       "position": [
-        -640,
-        260
+        -560,
+        240
       ],
       "parameters": {
         "options": {},
@@ -352,13 +544,14 @@
           "combinator": "and",
           "conditions": [
             {
-              "id": "n04-cond-pr-ready",
+              "id": "n04-cond-found",
               "operator": {
                 "type": "string",
-                "operation": "equals"
+                "operation": "exists",
+                "singleValue": true
               },
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "PR_READY"
+              "leftValue": "={{ $json.id }}",
+              "rightValue": ""
             }
           ]
         }
@@ -366,29 +559,140 @@
       "typeVersion": 2.3
     },
     {
-      "id": "n04-respond-not-ready",
-      "name": "Respond Not PR_READY",
+      "id": "n04-respond-stale",
+      "name": "Respond Stale Callback",
       "type": "n8n-nodes-base.respondToWebhook",
       "position": [
-        -400,
-        420
+        -320,
+        400
       ],
       "parameters": {
         "options": {
           "responseCode": 409
         },
         "respondWith": "json",
-        "responseBody": "={{ { \"error\": \"incident is not PR_READY\", \"incidentId\": $('Validate Payload').first().json.incidentId } }}"
+        "responseBody": "={{ { \"error\": \"no matching AGENT_RUNNING incident for this jobId (stale or duplicate callback)\", \"jobId\": $('Validate Payload').first().json.jobId } }}"
       },
       "typeVersion": 1.4
+    },
+    {
+      "id": "n04-route-status",
+      "name": "Route By Status",
+      "type": "n8n-nodes-base.switch",
+      "position": [
+        -320,
+        160
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "version": 3,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "n04-route-pr-ready",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $('Validate Payload').first().json.status }}",
+                    "rightValue": "PR_READY"
+                  }
+                ]
+              },
+              "outputKey": "PR_READY"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 3,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "n04-route-human",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $('Validate Payload').first().json.status }}",
+                    "rightValue": "HUMAN_REQUIRED"
+                  }
+                ]
+              },
+              "outputKey": "HUMAN_REQUIRED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 3,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "n04-route-failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $('Validate Payload').first().json.status }}",
+                    "rightValue": "AGENT_FAILED"
+                  }
+                ]
+              },
+              "outputKey": "AGENT_FAILED"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "typeVersion": 3.2
+    },
+    {
+      "id": "n04-set-pr-ready",
+      "name": "Set Incident PR_READY",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        -80,
+        -80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'PR_READY',\n    agent_result = $2::jsonb,\n    agent_completed_at = NOW(),\n    agent_claimed_at = NULL,\n    agent_last_error = NULL,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status, branch_name, agent_result;",
+        "options": {
+          "queryReplacement": "={{ [ $('Validate Payload').first().json.incidentId, JSON.stringify({ testsPassed: $('Validate Payload').first().json.testsPassed !== false, changedFiles: $('Validate Payload').first().json.changedFiles, addedLines: $('Validate Payload').first().json.addedLines, deletedLines: $('Validate Payload').first().json.deletedLines, commitSha: $('Validate Payload').first().json.commitSha, prNumber: $('Validate Payload').first().json.prNumber }) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      },
+      "typeVersion": 2.6
     },
     {
       "id": "n04-get-jira-issue",
       "name": "Get Jira Issue",
       "type": "n8n-nodes-base.jira",
       "position": [
-        -400,
-        140
+        160,
+        -80
       ],
       "parameters": {
         "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
@@ -409,8 +713,8 @@
       "name": "Get Jira Comments",
       "type": "n8n-nodes-base.jira",
       "position": [
-        -160,
-        140
+        400,
+        -80
       ],
       "parameters": {
         "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
@@ -433,8 +737,8 @@
       "name": "Detect AutoFix Comment Marker",
       "type": "n8n-nodes-base.code",
       "position": [
-        80,
-        140
+        640,
+        -80
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -447,8 +751,8 @@
       "name": "Comment Exists?",
       "type": "n8n-nodes-base.if",
       "position": [
-        320,
-        140
+        880,
+        -80
       ],
       "parameters": {
         "options": {},
@@ -481,11 +785,11 @@
       "name": "Add AutoFix PR Comment",
       "type": "n8n-nodes-base.jira",
       "position": [
-        560,
-        220
+        1120,
+        0
       ],
       "parameters": {
-        "comment": "=[autofix-pr:{{ $('Validate Payload').first().json.jiraKey }}]\n\nAutoFix created a Draft Pull Request:\n\n{{ $('Validate Payload').first().json.pullRequestUrl }}\n\nValidation:\n- Regression test added\n- ./gradlew clean test: {{ $('Validate Payload').first().json.testsPassed ? 'PASSED' : 'FAILED' }}\n- Changed files: {{ $('Validate Payload').first().json.changedFiles }}\n- Risk classification: LOW\n\nAutomatic merge is disabled. Human review is required.",
+        "comment": "=[autofix-pr:{{ $('Validate Payload').first().json.jiraKey }}]\n\nAutoFix (containerized agent) created a Draft Pull Request:\n\n{{ $('Validate Payload').first().json.prUrl }}\n\nValidation:\n- Regression test added\n- ./gradlew clean test: {{ $('Validate Payload').first().json.testsPassed !== false ? 'PASSED' : 'FAILED' }}\n- Changed files: {{ $('Validate Payload').first().json.changedFiles }}\n- Risk classification: LOW\n\nAutomatic merge is disabled. Human review is required.",
         "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
         "resource": "issueComment",
         "operation": "add",
@@ -504,8 +808,8 @@
       "name": "Read Jira Transitions",
       "type": "n8n-nodes-base.jira",
       "position": [
-        800,
-        140
+        1360,
+        -80
       ],
       "parameters": {
         "issueKey": "={{ $('Validate Payload').first().json.jiraKey }}",
@@ -527,12 +831,12 @@
       "name": "Evaluate Jira Transition",
       "type": "n8n-nodes-base.code",
       "position": [
-        1040,
-        140
+        1600,
+        -80
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Jira Cloud localizes status names (this instance's REVIEW-equivalent\n// status is named \"\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u043a\\u0430\" / \"Review\" in Russian, id 10010,\n// and the transition itself is named lower-case \"review\", id 2 -- see\n// Stage 5A verification). Match on both the transition name and its\n// target status name, case-insensitively, against every alias we know\n// of, rather than assuming a single literal English string.\nconst REVIEW_ALIASES = ['review', 'in review', 'code review', '\\u043f\\u0440\\u043e\\u0432\\u0435\\u0440\\u043a\\u0430'];\n\nfunction isReviewName(name) {\n  return typeof name === 'string' && REVIEW_ALIASES.includes(name.trim().toLowerCase());\n}\n\nconst payload = $('Validate Payload').first().json;\nconst currentStatus = $('Get Jira Issue').first().json.fields.status;\n\nconst transitions = $input.all().map((item) => item.json);\nconst match = transitions.find(\n  (t) => isReviewName(t.name) || isReviewName(t.to && t.to.name)\n);\n\nreturn {\n  json: {\n    ...payload,\n    currentStatusName: currentStatus.name,\n    currentStatusId: currentStatus.id,\n    alreadyReview: isReviewName(currentStatus.name),\n    transitionId: match ? match.id : null,\n    transitionName: match ? match.name : null,\n    targetStatusName: match ? match.to.name : null,\n  },\n};\n"
+        "jsCode": "const REVIEW_ALIASES = ['review', 'in review', 'code review', '\\u043f\\u0440\\u043e\\u0432\\u0435\\u0440\\u043a\\u0430'];\n\nfunction isReviewName(name) {\n  return typeof name === 'string' && REVIEW_ALIASES.includes(name.trim().toLowerCase());\n}\n\nconst payload = $('Validate Payload').first().json;\nconst currentStatus = $('Get Jira Issue').first().json.fields.status;\n\nconst transitions = $input.all().map((item) => item.json);\nconst match = transitions.find(\n  (t) => isReviewName(t.name) || isReviewName(t.to && t.to.name)\n);\n\nreturn {\n  json: {\n    ...payload,\n    currentStatusName: currentStatus.name,\n    currentStatusId: currentStatus.id,\n    alreadyReview: isReviewName(currentStatus.name),\n    transitionId: match ? match.id : null,\n    transitionName: match ? match.name : null,\n    targetStatusName: match ? match.to.name : null,\n  },\n};\n"
       },
       "typeVersion": 2
     },
@@ -541,8 +845,8 @@
       "name": "Already REVIEW?",
       "type": "n8n-nodes-base.if",
       "position": [
-        1280,
-        140
+        1840,
+        -80
       ],
       "parameters": {
         "options": {},
@@ -575,8 +879,8 @@
       "name": "Transition Available?",
       "type": "n8n-nodes-base.if",
       "position": [
-        1520,
-        260
+        2080,
+        40
       ],
       "parameters": {
         "options": {},
@@ -605,29 +909,12 @@
       "typeVersion": 2.3
     },
     {
-      "id": "n04-respond-no-transition",
-      "name": "Respond No Transition Found",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "position": [
-        1760,
-        460
-      ],
-      "parameters": {
-        "options": {
-          "responseCode": 422
-        },
-        "respondWith": "json",
-        "responseBody": "={{ { \"error\": \"no REVIEW transition available\", \"jiraKey\": $json.jiraKey, \"currentStatusName\": $json.currentStatusName, \"incidentStatus\": \"HUMAN_REQUIRED\" } }}"
-      },
-      "typeVersion": 1.4
-    },
-    {
       "id": "n04-execute-transition",
       "name": "Execute Jira Transition",
       "type": "n8n-nodes-base.httpRequest",
       "position": [
-        1760,
-        140
+        2320,
+        -80
       ],
       "parameters": {
         "url": "={{ $env.JIRA_BASE_URL }}/rest/api/3/issue/{{ $json.jiraKey }}/transitions",
@@ -652,11 +939,11 @@
       "name": "Update Incident To REVIEW",
       "type": "n8n-nodes-base.postgres",
       "position": [
-        2000,
-        140
+        2560,
+        -80
       ],
       "parameters": {
-        "query": "UPDATE autofix.incident\nSET\n    status = 'REVIEW',\n    agent_completed_at = NOW(),\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key = $2\nRETURNING id, status, jira_key, branch_name;",
+        "query": "UPDATE autofix.incident\nSET status = 'REVIEW',\n    agent_completed_at = NOW(),\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key = $2\nRETURNING id, status, jira_key, branch_name;",
         "options": {
           "queryReplacement": "={{ [ $('Validate Payload').first().json.incidentId, $('Validate Payload').first().json.jiraKey ] }}"
         },
@@ -671,12 +958,52 @@
       "typeVersion": 2.6
     },
     {
+      "id": "n04-set-human-required-no-transition",
+      "name": "Set Incident HUMAN_REQUIRED (No Transition)",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        2320,
+        200
+      ],
+      "parameters": {
+        "query": "UPDATE autofix.incident\nSET status = 'HUMAN_REQUIRED',\n    agent_last_error = $3,\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key = $2\nRETURNING id, status, jira_key, agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $('Validate Payload').first().json.incidentId, $json.jiraKey, 'NO_REVIEW_TRANSITION: no transition to REVIEW-equivalent status available from current status ' + $json.currentStatusName + ' -- PR/comment already posted, manual Jira transition required' ] }}"
+        },
+        "operation": "executeQuery"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      },
+      "typeVersion": 2.6
+    },
+    {
+      "id": "n04-respond-no-transition",
+      "name": "Respond No Transition Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        2560,
+        200
+      ],
+      "parameters": {
+        "options": {
+          "responseCode": 422
+        },
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"no REVIEW transition available\", \"jiraKey\": $json.jiraKey, \"currentStatusName\": $json.currentStatusName, \"incidentStatus\": \"HUMAN_REQUIRED\" } }}"
+      },
+      "typeVersion": 1.4
+    },
+    {
       "id": "n04-respond-success",
       "name": "Respond Success",
       "type": "n8n-nodes-base.respondToWebhook",
       "position": [
-        2240,
-        140
+        2800,
+        -80
       ],
       "parameters": {
         "options": {
@@ -688,19 +1015,113 @@
       "typeVersion": 1.4
     },
     {
-      "id": "n04-set-human-required-no-transition",
-      "name": "Set Incident HUMAN_REQUIRED (No Transition)",
+      "id": "n04-update-human-required",
+      "name": "Update Incident HUMAN_REQUIRED",
       "type": "n8n-nodes-base.postgres",
       "position": [
-        1520,
-        460
+        -80,
+        160
       ],
       "parameters": {
-        "query": "UPDATE autofix.incident\nSET\n    status = 'HUMAN_REQUIRED',\n    agent_last_error = $3,\n    updated_at = NOW()\nWHERE id = $1\n  AND jira_key = $2\nRETURNING id, status, jira_key, agent_last_error;",
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'HUMAN_REQUIRED',\n    agent_last_error = $2,\n    agent_completed_at = NOW(),\n    agent_claimed_at = NULL,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status, agent_last_error;",
         "options": {
-          "queryReplacement": "={{ [ $('Validate Payload').first().json.incidentId, $json.jiraKey, 'NO_REVIEW_TRANSITION: no transition to REVIEW-equivalent status available from current status ' + $json.currentStatusName + ' -- PR/comment already posted, manual Jira transition required' ] }}"
-        },
-        "operation": "executeQuery"
+          "queryReplacement": "={{ [ $('Validate Payload').first().json.incidentId, $('Validate Payload').first().json.errorCode + ': ' + ($('Validate Payload').first().json.errorMessage || '') ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      },
+      "typeVersion": 2.6
+    },
+    {
+      "id": "n04-decide-agent-failed-retry",
+      "name": "Decide Agent-Failed Retry Or Terminal",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -80,
+        400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const payload = $('Validate Payload').first().json;\nconst incident = $('Lookup Incident By Job ID').first().json;\nconst attempt = incident.agent_attempt_count;\n\nconst backoffByAttempt = { 1: '1 minute', 2: '5 minutes', 3: '15 minutes' };\nconst backoff = backoffByAttempt[attempt] || null;\nconst terminal = attempt >= 3;\nconst reason = `${payload.errorCode}: ${payload.errorMessage || ''} (attempt ${attempt})`;\n\nreturn {\n  json: {\n    incidentId: payload.incidentId,\n    terminal,\n    backoff,\n    reason,\n  },\n};\n"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n04-agent-failed-terminal",
+      "name": "Agent-Failed Terminal?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        160,
+        400
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n04-cond-agent-failed-terminal",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.terminal }}",
+              "rightValue": true
+            }
+          ]
+        }
+      },
+      "typeVersion": 2.3
+    },
+    {
+      "id": "n04-set-agent-failed-terminal",
+      "name": "Set Incident AGENT_FAILED (Terminal)",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        400,
+        320
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'AGENT_FAILED',\n    agent_last_error = $2,\n    agent_completed_at = NOW(),\n    agent_claimed_at = NULL,\n    agent_next_attempt_at = NULL,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status, agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $json.incidentId, $json.reason ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "TR5zuiuRo771ypgT",
+          "name": "Postgres account"
+        }
+      },
+      "typeVersion": 2.6
+    },
+    {
+      "id": "n04-retry-agent-failed",
+      "name": "Retry Incident (Agent-Failed Backoff)",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        400,
+        480
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE autofix.incident\nSET status = 'AGENT_PENDING',\n    agent_claimed_at = NULL,\n    agent_job_id = NULL,\n    agent_next_attempt_at = NOW() + ($2)::interval,\n    agent_last_error = $3,\n    updated_at = NOW()\nWHERE id = $1\nRETURNING id, status, agent_next_attempt_at, agent_last_error;",
+        "options": {
+          "queryReplacement": "={{ [ $json.incidentId, $json.backoff, $json.reason ] }}"
+        }
       },
       "credentials": {
         "postgres": {

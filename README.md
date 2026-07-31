@@ -347,7 +347,7 @@ Jira ticket (JIRA_CREATED)
         ↓
 Policy Gate (Workflow 03)
         ↓
-Host Agent Runner (claim → worktree → Copilot CLI → validation)
+Agent Runner (claim → worktree → Copilot CLI → validation)
         ↓
 branch + commit + push
         ↓
@@ -358,14 +358,22 @@ Jira comment + transition to REVIEW (Workflow 04)
 Human code review
 ```
 
-### Components
+> **Superseded by Stage 7.** Stage 5 originally ran the runner as a Bash
+> script directly on a developer machine (`agent-runner/`). Stage 7 (below)
+> replaced that host process with a persistent, containerized
+> `autofix-agent` service dispatched over HTTP from n8n Workflow 03; the
+> `agent-runner/` directory has been removed. The pipeline stages,
+> Validation Gate rules, and no-auto-merge guarantee described below are
+> unchanged — only *where* the runner executes changed.
 
-- **`agent-runner/`** — a local Bash + `jq` + `psql` orchestrator that runs
-  on a developer machine (where Copilot CLI, `git`, `gh`, and repository
-  credentials already live). Entry point: `agent-runner/run-once.sh`.
-  Library scripts in `agent-runner/lib/` implement each stage:
-  `claim-job.sh`, `prepare-worktree.sh`, `run-copilot.sh`,
-  `validate-diff.sh`, `create-pr.sh`, `report-result.sh`.
+### Components (original, host-based — see Stage 7 for the current architecture)
+
+- **`agent-runner/`** *(removed — see Stage 7)* — a local Bash + `jq` +
+  `psql` orchestrator that ran on a developer machine (where Copilot CLI,
+  `git`, `gh`, and repository credentials already lived). Entry point:
+  `agent-runner/run-once.sh`. Library scripts in `agent-runner/lib/`
+  implemented each stage: `claim-job.sh`, `prepare-worktree.sh`,
+  `run-copilot.sh`, `validate-diff.sh`, `create-pr.sh`, `report-result.sh`.
 - **`infrastructure/postgres/init/003-agent-processing.sql`** — adds the
   AutoFix processing state machine to `autofix.incident`
   (`AGENT_PENDING` → `AGENT_RUNNING` → `PR_READY` → `REVIEW`, with
@@ -441,6 +449,10 @@ or workflows:
 | `JIRA_BASE_URL` | Jira Cloud tenant base URL (used by n8n workflow 04) |
 
 ### Running the agent runner
+
+*(Historical — this host script no longer exists. See
+[Stage 7](#stage-7-containerized-autofix-agent) for how to run the
+current `autofix-agent` container.)*
 
 ```bash
 export AUTOFIX_REPO=/path/to/autofix-poc-demo-service
@@ -664,3 +676,154 @@ for the Stage 6B test report.
 Not included at this stage: rotating the shared webhook token
 automatically, rate-limiting the webhook beyond n8n's defaults, and any
 change to Stage 5's no-auto-merge / human-review guarantees.
+
+## Stage 7: Containerized AutoFix Agent
+
+Stages 5/6/6B ran the Agent Runner as a Bash script directly on a
+developer machine, which meant the pipeline could only run when that
+machine was on, and every host needed its own local Copilot CLI/`gh`
+login and Postgres/Jira network access. Stage 7 replaces the host script
+with a **persistent, containerized `autofix-agent` service** running
+alongside the rest of the stack in `docker compose`, dispatched over
+HTTP from n8n instead of invoked from a terminal. `agent-runner/` has
+been removed; all of its responsibilities now live in either
+`autofix-agent/` (the container) or directly inside n8n Workflows 03/04
+(which already hold the only Postgres/Jira credentials in the system).
+
+```
+Jira ticket (JIRA_CREATED)
+        ↓
+Policy Gate (Workflow 03) → AGENT_PENDING
+        ↓
+Claim job (Workflow 03, atomic UPDATE ... FOR UPDATE SKIP LOCKED,
+           increments agent_attempt_count, computes agent_job_id)
+        ↓
+Fetch ticket context (Workflow 03 → Workflow 05 → Jira, unchanged from
+                       Stage 6B)
+        ↓
+POST /api/jobs  (Workflow 03 → autofix-agent container, bearer-token
+                 auth, single-job lock, 202/409/4xx)
+        ↓
+autofix-agent: clone → branch → Copilot CLI → Validation Gate →
+               commit + push → find-or-create Draft PR
+        ↓
+POST /webhook/autofix/agent-result  (autofix-agent → Workflow 04,
+                                      bearer-token auth)
+        ↓
+Workflow 04: Jira comment + transition to REVIEW, or retry/backoff on
+             failure, or terminal HUMAN_REQUIRED
+        ↓
+Human code review
+```
+
+### Why containerize the runner
+
+- **No dependency on a developer machine being on.** The agent runs as
+  a long-lived Docker service next to Elasticsearch/Kibana/Logstash/
+  Postgres/n8n; the whole pipeline survives a reboot with `docker
+  compose up -d` and no manual script invocation.
+- **Smaller credential surface per host.** The container has **no**
+  Postgres, Jira, or Elasticsearch credentials and no Docker socket — it
+  only holds a GitHub/Copilot token and a bearer token for its own HTTP
+  API. Every database write (claiming jobs, retry/backoff bookkeeping,
+  transitioning to `REVIEW`/`HUMAN_REQUIRED`) now happens from n8n
+  Workflows 03/04, which already held the Postgres and Jira credentials.
+- **Portable to any orchestrator.** Because dispatch is a plain HTTP
+  `POST` with a JSON body and callback, the same container image can run
+  under plain `docker compose`, a single VM, or later be moved to
+  Kubernetes (Deployment + Service + Secret) without changing the n8n
+  workflows at all — n8n only needs the container's HTTP endpoint to be
+  reachable.
+- **Single-job concurrency, enforced in the container.** `server.py`
+  keeps an in-process lock plus a `/workspace/agent.lock` file, so a
+  second dispatch while a job is running gets an immediate `409` instead
+  of two Copilot CLI processes fighting over the same worktree.
+
+### New components
+
+- **`autofix-agent/`** — the container replacing `agent-runner/`:
+  - `Dockerfile` — `eclipse-temurin:21-jdk-jammy` base (JDK for
+    `./gradlew test`) + Node.js 20 + pinned GitHub CLI + pinned
+    `@github/copilot` npm package + Python 3/FastAPI, running as a
+    non-root user, exposing port 8090, with a `/health` healthcheck.
+  - `server.py` — the HTTP front door: `POST /api/jobs` (bearer-token
+    auth, JSON-schema validation, single-job lock, dispatches
+    `execute-job.sh` in the background, replies `202`/`409`/`400`/`401`),
+    `GET /api/jobs/{jobId}`, `GET /health`.
+  - `execute-job.sh` — the pipeline orchestrator, calling each
+    `lib/*.sh` step in sequence: validate job → prepare workspace →
+    clone repository → prepare branch → (short-circuit if a PR already
+    exists for that branch) → build prompt → run Copilot CLI → Validation
+    Gate → commit + push → find-or-create Draft PR → report result to
+    n8n → clean up the workspace unconditionally.
+  - `lib/run-copilot.sh` and `lib/validate-diff.sh` are unchanged
+    ports of the Stage 5 logic (same sandboxed Copilot CLI invocation,
+    same Validation Gate rules). The other `lib/*.sh` scripts are new,
+    rewritten to have zero Postgres/Jira access.
+  - `schemas/agent-job.schema.json` — the job envelope n8n sends
+    (flat `ticketContext`, replacing the old nested
+    `{ticket, incident}` shape from Workflow 05's raw response — Workflow
+    03 flattens it before dispatch).
+- **`infrastructure/postgres/init/005-container-agent.sql`** — adds
+  `agent_job_id` (plus a unique partial index) so a Workflow 04 callback
+  can be matched back to exactly the incident/attempt that produced it.
+- **`infrastructure/n8n/workflows/03-queue-autofix-candidates.json`**
+  (rewritten) — keeps the original Policy Gate branch unchanged, and adds
+  a second branch that reclaims stuck `AGENT_RUNNING` incidents, claims
+  one `AGENT_PENDING` job atomically, fetches ticket context via
+  Workflow 05, flattens it into the agent's job shape, and dispatches it
+  to `autofix-agent` over HTTP — reverting to `AGENT_PENDING` on a `409`
+  (agent busy) or to `HUMAN_REQUIRED` on any other dispatch failure.
+- **`infrastructure/n8n/workflows/04-finalize-autofix-review.json`**
+  (rewritten) — new webhook path `/webhook/autofix/agent-result` with
+  bearer-token auth, replacing the old `/webhook/autofix/pr-ready` path.
+  Looks the incident up by `agent_job_id` (rejecting stale/duplicate
+  callbacks with `409`), then branches on the reported status:
+  `PR_READY` (Jira comment + transition to `REVIEW`, same idempotent
+  logic as before), `HUMAN_REQUIRED` (terminal), or `AGENT_FAILED`
+  (retry with backoff — 1/5/15 minutes by attempt count, terminal at
+  attempt ≥ 3 — logic ported from the old `mark-incident-failed.sh`,
+  now living in n8n since it owns the Postgres credential).
+- **`infrastructure/docker-compose.yml`** — new `autofix-agent` service
+  (built from `../autofix-agent`, port 8090, `autofix-agent-workspace`
+  volume) plus the two new bearer tokens added to the `n8n` service's
+  environment.
+
+Workflow 05 ("Get AutoFix Ticket Context") required **no changes** —
+Workflow 03's job-payload step flattens its existing nested response
+into the shape the agent expects.
+
+### Configuration additions
+
+| Variable | Purpose |
+|---|---|
+| `AUTOFIX_AGENT_API_TOKEN` | Bearer token n8n Workflow 03 sends to `autofix-agent`'s `POST /api/jobs` |
+| `AUTOFIX_CALLBACK_TOKEN` | Bearer token `autofix-agent` sends back to n8n Workflow 04's `/webhook/autofix/agent-result` |
+| `AUTOFIX_GITHUB_TOKEN` | Token used by `gh`/`git` inside the container to clone, push, and open Draft PRs |
+| `AUTOFIX_COPILOT_TOKEN` | Token mapped to `COPILOT_GITHUB_TOKEN` inside the container for non-interactive Copilot CLI auth (takes precedence over `GH_TOKEN`/`GITHUB_TOKEN`) |
+| `AUTOFIX_REPOSITORY_URL` / `AUTOFIX_REPOSITORY_OWNER` / `AUTOFIX_REPOSITORY_NAME` | The only repository the container is allowed to clone — never accepted from the job request itself |
+| `AUTOFIX_BASE_BRANCH` | Base branch for branches/PRs (default `main`) |
+
+See `infrastructure/.env.example` for the full list. `infrastructure/.env`
+itself is gitignored and must be recreated manually on any new machine —
+see the "Rebuilding after a fresh machine/OS" note below.
+
+### Running it locally
+
+```bash
+cd infrastructure
+docker compose up -d --build autofix-agent
+curl http://localhost:8090/health
+```
+
+No manual script invocation is needed afterward — n8n Workflow 03
+dispatches jobs to the running container automatically every schedule
+tick.
+
+## Scope of Stage 7
+
+Not included at this stage: moving the container to Kubernetes (the
+image and HTTP contract are designed to allow it, but no manifests exist
+yet), concurrent multi-job processing (still one job at a time, enforced
+by the container's own lock), and any change to the Validation Gate
+rules or the no-auto-merge / human-review guarantee.
