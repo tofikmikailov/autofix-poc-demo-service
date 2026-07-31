@@ -827,3 +827,106 @@ image and HTTP contract are designed to allow it, but no manifests exist
 yet), concurrent multi-job processing (still one job at a time, enforced
 by the container's own lock), and any change to the Validation Gate
 rules or the no-auto-merge / human-review guarantee.
+
+## Stage 8: Incident lifecycle refinements
+
+Two smaller, independent refinements on top of Stage 7's containerized
+pipeline, both driven by gaps found while exercising the live system.
+
+### Jira visibility while the agent is working
+
+Previously a Jira ticket sat in "To Do" for the entire duration of the
+agent's work and only moved once a Draft PR was ready (straight to
+`REVIEW`), giving no visibility that anything was happening in between.
+
+**Workflow 03** now transitions the ticket to an "in development" status
+(matched by name/alias, exactly like Workflow 04's existing `REVIEW`
+transition) at the one point where we know work has genuinely started:
+right after `autofix-agent` responds `202 Accepted` to the job dispatch
+— not at claim time, since a claim can still bounce back to
+`AGENT_PENDING` on a `409`/dispatch failure, which would otherwise cause
+the ticket to flip back and forth for no reason.
+
+- **New nodes in `infrastructure/n8n/workflows/03-queue-autofix-candidates.json`**
+  (added after `Dispatch Accepted?`'s true branch): `Get Jira Issue (In Dev)`
+  → `Read Jira Transitions (In Dev)` → `Evaluate Jira Transition (In Dev)`
+  (Code node matching the current status/transition names against the
+  aliases `in progress`, `in development`, `development`, `in dev`,
+  `в разработке`, case-insensitively) → `In Dev Transition Available?`
+  → `Execute Jira Transition (In Dev)`.
+- No hard-coded Jira transition ID is used — the same "ask Jira what
+  transitions are available from the current status, match by name"
+  pattern as Workflow 04's `REVIEW` transition.
+- Best-effort and non-blocking: if no matching transition is available
+  from the ticket's current status (e.g. a human already moved it
+  further manually), the branch is simply skipped — it does not fail
+  the dispatch or change the incident's own `AGENT_RUNNING` status in
+  PostgreSQL.
+
+### Reopening a recurring incident instead of silently reusing a closed ticket
+
+`fingerprint` previously had a plain `UNIQUE` constraint on
+`autofix.incident`, so **any** later recurrence of the exact same error
+-- even long after its incident had reached `REVIEW` (fix proposed,
+possibly since merged and the Jira ticket closed by a human),
+`HUMAN_REQUIRED`, or `AGENT_FAILED` -- would just silently bump that old
+row's `last_seen_at`/`occurrence_count`. No new Jira ticket, no new
+AutoFix attempt, regardless of whether the original ticket had long
+since been resolved and closed.
+
+- **`infrastructure/postgres/init/006-reopen-recurring-incidents.sql`**
+  replaces the plain `UNIQUE(fingerprint)` constraint with a **partial
+  unique index**:
+  ```sql
+  CREATE UNIQUE INDEX idx_incident_fingerprint_active
+      ON autofix.incident (fingerprint)
+      WHERE status NOT IN (
+          'REVIEW', 'HUMAN_REQUIRED', 'AGENT_FAILED', 'COMPLETED', 'FAILED'
+      );
+  ```
+  Uniqueness is now enforced only among *active* (still in-flight)
+  incidents. Once an incident reaches one of the terminal statuses
+  above, it stops participating in the uniqueness check, so it no
+  longer blocks a fresh row for the same fingerprint.
+- **Workflow 01**'s upsert (`Claim & Upsert Incident`) changed its
+  `ON CONFLICT (fingerprint)` target to
+  `ON CONFLICT (fingerprint) WHERE status NOT IN (...)`, matching the
+  new partial index's predicate exactly (required by Postgres to pick
+  it as the conflict arbiter). A recurrence that no longer conflicts
+  with an old terminal row inserts as a **brand-new incident** (new
+  `id`, `occurrence_count = 1`, fresh `status = 'DETECTED'`) instead of
+  updating the old one. Recurrences while the existing incident is
+  still active are unaffected — they still just bump the same row, exactly
+  as before.
+- **Workflow 02**'s crash-recovery idempotency check (`Search Jira by
+  Fingerprint` — re-links an incident to an already-created Jira ticket
+  if a previous run created the ticket but crashed before writing
+  `jira_key` back to Postgres) searched only by the `autofix-fp-<hash>`
+  label, so it would incorrectly match and re-link a reopened incident
+  to the **old**, already-resolved ticket (Jira labels are never removed
+  from closed tickets). Fixed by adding a second, per-incident label
+  (`autofix-incident-<id>`, set in `Prepare Jira Payload`) and requiring
+  **both** labels in the recovery JQL:
+  ```
+  project = AUTO AND labels = "autofix-fp-<hash>" AND labels = "autofix-incident-<id>" ORDER BY created ASC
+  ```
+  This scopes the recovery search to this exact incident row's own
+  prior (crashed) attempt, never to an older incident sharing the same
+  fingerprint.
+
+Verified live: triggering the same NPE again after its original
+incident (13, `AUTO-10`) reached `REVIEW` produced a new, independent
+incident row with its own distinct Jira ticket (`AUTO-12`) and its own
+full AutoFix cycle, rather than re-linking to the closed `AUTO-10`
+ticket.
+
+## Scope of Stage 8
+
+Not included at this stage: syncing PostgreSQL's `status` back from
+Jira's real-world status (there is still no polling of Jira after a
+ticket reaches `REVIEW`, so "terminal" here means "this system's
+automated lifecycle for the incident concluded", not "a human
+confirmed it in Jira"); any cross-linking between a reopened incident
+and its predecessor's ticket (each is fully independent, with no
+back-reference); and de-duplicating *concurrently active* recurrences
+beyond the existing partial-unique-index guarantee.
