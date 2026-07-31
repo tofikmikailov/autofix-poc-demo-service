@@ -199,7 +199,13 @@
     },
     "Dispatch Accepted?": {
       "main": [
-        [],
+        [
+          {
+            "node": "Get Jira Issue (In Dev)",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Dispatch Busy Or Failed?",
@@ -225,6 +231,51 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "Get Jira Issue (In Dev)": {
+      "main": [
+        [
+          {
+            "node": "Read Jira Transitions (In Dev)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Jira Transitions (In Dev)": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Jira Transition (In Dev)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Jira Transition (In Dev)": {
+      "main": [
+        [
+          {
+            "node": "In Dev Transition Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "In Dev Transition Available?": {
+      "main": [
+        [
+          {
+            "node": "Execute Jira Transition (In Dev)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     }
   },
@@ -813,6 +864,124 @@
         "postgres": {
           "id": "TR5zuiuRo771ypgT",
           "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "issueKey": "={{ $('Build Agent Job Payload').first().json.jiraKey }}",
+        "resource": "issue",
+        "operation": "get",
+        "jiraVersion": "cloud"
+      },
+      "id": "n03-get-jira-issue-indev",
+      "name": "Get Jira Issue (In Dev)",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        320,
+        0
+      ],
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "issueKey": "={{ $('Build Agent Job Payload').first().json.jiraKey }}",
+        "resource": "issue",
+        "operation": "transitions",
+        "jiraVersion": "cloud"
+      },
+      "id": "n03-read-jira-transitions-indev",
+      "name": "Read Jira Transitions (In Dev)",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        560,
+        0
+      ],
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const IN_DEV_ALIASES = ['in progress', 'in development', 'development', 'in dev', '\\u0432 \\u0440\\u0430\\u0437\\u0440\\u0430\\u0431\\u043e\\u0442\\u043a\\u0435'];\n\nfunction isInDevName(name) {\n  return typeof name === 'string' && IN_DEV_ALIASES.includes(name.trim().toLowerCase());\n}\n\nconst jiraKey = $('Build Agent Job Payload').first().json.jiraKey;\nconst currentStatus = $('Get Jira Issue (In Dev)').first().json.fields.status;\n\nconst transitions = $input.all().map((item) => item.json);\nconst match = transitions.find(\n  (t) => isInDevName(t.name) || isInDevName(t.to && t.to.name)\n);\n\nreturn {\n  json: {\n    jiraKey,\n    currentStatusName: currentStatus.name,\n    alreadyInDev: isInDevName(currentStatus.name),\n    transitionId: match ? match.id : null,\n    transitionName: match ? match.name : null,\n  },\n};\n"
+      },
+      "id": "n03-evaluate-jira-transition-indev",
+      "name": "Evaluate Jira Transition (In Dev)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n03-cond-transition-available-indev",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.transitionId }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      },
+      "id": "n03-transition-available-indev-if",
+      "name": "In Dev Transition Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.JIRA_BASE_URL }}/rest/api/3/issue/{{ $json.jiraKey }}/transitions",
+        "method": "POST",
+        "options": {},
+        "jsonBody": "={{ { \"transition\": { \"id\": $json.transitionId } } }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "jiraSoftwareCloudApi"
+      },
+      "id": "n03-execute-jira-transition-indev",
+      "name": "Execute Jira Transition (In Dev)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        -80
+      ],
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "xgqtwUMIF6NrXpw1",
+          "name": "Jira SW Cloud account"
         }
       }
     }
