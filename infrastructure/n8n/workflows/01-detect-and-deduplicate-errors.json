@@ -25,7 +25,7 @@
           "interval": [
             {
               "field": "minutes",
-              "minutesInterval": 1
+              "minutesInterval": 5
             }
           ]
         }
@@ -215,6 +215,102 @@
         }
       },
       "typeVersion": 3.4
+    },
+    {
+      "id": "n01-webhook-push-trigger",
+      "name": "Webhook (Push Trigger)",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        -1120,
+        560
+      ],
+      "parameters": {
+        "path": "autofix/error-detected",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {
+          "responseData": "{\"received\": true}"
+        }
+      },
+      "typeVersion": 2,
+      "webhookId": "autofix-error-detected"
+    },
+    {
+      "id": "n01-validate-push-auth",
+      "name": "Validate Push Auth",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -880,
+        560
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const headers = $json.headers || {};\nconst body = $json.body || {};\n\nconst expectedToken = $env.AUTOFIX_LOGSTASH_WEBHOOK_TOKEN || '';\nconst receivedToken = headers['x-autofix-logstash-token'] || '';\n\nfunction timingSafeEqual(a, b) {\n  if (typeof a !== 'string' || typeof b !== 'string') return false;\n  if (a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) {\n    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  }\n  return diff === 0;\n}\n\nconst authValid = expectedToken.length > 0 && timingSafeEqual(receivedToken, expectedToken);\n\nreturn { json: { authValid, body } };"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n01-push-auth-valid",
+      "name": "Push Auth Valid?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        -640,
+        560
+      ],
+      "parameters": {
+        "options": {
+          "version": 3,
+          "leftValue": "",
+          "caseSensitive": true,
+          "typeValidation": "strict"
+        },
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "n01-push-auth-valid-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.authValid }}",
+              "rightValue": true
+            }
+          ]
+        }
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "n01-reject-push-auth",
+      "name": "Reject Invalid Push Auth",
+      "type": "n8n-nodes-base.noOp",
+      "position": [
+        -640,
+        720
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "n01-map-webhook-payload",
+      "name": "Map Webhook Payload",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -400,
+        560
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Adapt Logstash's pushed event into the exact same shape\n// 'Split Elasticsearch Hits' produces for the schedule/poll\n// path, so the rest of the workflow (Normalize Error onward)\n// is shared, unmodified, between both trigger paths.\nconst body = $json.body || {};\n\nreturn {\n  json: {\n    elasticsearchId: body.event_id,\n    elasticsearchIndex: body.index_name,\n    source: body,\n  },\n};"
+      },
+      "typeVersion": 2
     }
   ],
   "connections": {
@@ -307,6 +403,57 @@
         [
           {
             "node": "Existing Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook (Push Trigger)": {
+      "main": [
+        [
+          {
+            "node": "Validate Push Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Push Auth": {
+      "main": [
+        [
+          {
+            "node": "Push Auth Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Push Auth Valid?": {
+      "main": [
+        [
+          {
+            "node": "Map Webhook Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject Invalid Push Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Webhook Payload": {
+      "main": [
+        [
+          {
+            "node": "Normalize Error",
             "type": "main",
             "index": 0
           }

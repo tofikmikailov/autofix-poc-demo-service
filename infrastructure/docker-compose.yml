@@ -43,6 +43,10 @@ services:
     environment:
       XPACK_MONITORING_ENABLED: "false"
       LS_JAVA_OPTS: "-Xms256m -Xmx256m"
+      # Stage 9: push-trigger webhook call to Workflow 01
+      # (POST http://n8n:5678/webhook/autofix/error-detected), referenced
+      # from the pipeline's `http` output via ${AUTOFIX_LOGSTASH_WEBHOOK_TOKEN}.
+      AUTOFIX_LOGSTASH_WEBHOOK_TOKEN: ${AUTOFIX_LOGSTASH_WEBHOOK_TOKEN}
     ports:
       - "127.0.0.1:5000:5000"
       - "127.0.0.1:9600:9600"
@@ -115,6 +119,11 @@ services:
       # Ticket Context"'s Validate Request node via {{ $env.AUTOFIX_RUNNER_WEBHOOK_TOKEN }}.
       # Not a Jira credential -- only authenticates the local Agent Runner.
       AUTOFIX_RUNNER_WEBHOOK_TOKEN: ${AUTOFIX_RUNNER_WEBHOOK_TOKEN}
+
+      # Stage 9: shared secret validated by "01 - Detect and Deduplicate
+      # Elastic Errors"'s "Validate Push Auth" node, authenticating
+      # Logstash's push-trigger webhook call (POST /webhook/autofix/error-detected).
+      AUTOFIX_LOGSTASH_WEBHOOK_TOKEN: ${AUTOFIX_LOGSTASH_WEBHOOK_TOKEN}
 
       # Containerized AutoFix Agent: bearer tokens used by Workflow 03's
       # dispatch call (POST autofix-agent:8090/api/jobs) and validated by

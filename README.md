@@ -1015,3 +1015,75 @@ confirmed it in Jira"); any cross-linking between a reopened incident
 and its predecessor's ticket (each is fully independent, with no
 back-reference); and de-duplicating *concurrently active* recurrences
 beyond the existing partial-unique-index guarantee.
+
+## Stage 9: Push-based error detection via a Logstash webhook
+
+Workflow 01 originally only *polled* Elasticsearch every minute
+(`Schedule Trigger` → `Search Elasticsearch` over the last 15 minutes).
+That meant a fresh error could sit undetected for up to a minute before
+the pipeline even started looking at it.
+
+**Why not native Kibana Alerting?** Kibana's Alerting framework can
+run a query on a schedule and fire a **Webhook connector** the moment
+a rule matches — which sounds like the same job, done natively. It was
+ruled out because the Webhook (and Slack/Email/etc.) connector types
+require a **Gold license or higher**; this stack runs on the **Basic**
+license (confirmed via `GET /_license` on the live cluster), which
+only allows internal actions (index/log), not outbound webhooks. Kibana
+Alerting stays out of scope until/unless the license tier changes.
+
+**What was built instead**: Logstash already sits directly in the
+ingestion path between the demo app and Elasticsearch
+(`infrastructure/logstash/pipeline/autofix-logs.conf`), so it can push
+matching events out itself, for free, using the built-in `http` output
+plugin — no license required:
+
+- A `uuid` filter stamps every event with an `event_id` *before* either
+  output runs.
+- The `elasticsearch` output is pinned to write with
+  `document_id => "%{[event_id]}"`, so the ES document and the
+  webhook payload always share the exact same ID.
+- A conditional `http` output fires only for events matching
+  `level == "ERROR" AND service == "autofix-demo-service"` (excluding
+  the demo's intentionally-noisy `DemoController` logger), POSTing the
+  full event as JSON to a new n8n webhook
+  (`POST /webhook/autofix/error-detected`) authenticated with a shared
+  secret header (`x-autofix-logstash-token`, validated against
+  `AUTOFIX_LOGSTASH_WEBHOOK_TOKEN`).
+- In workflow 01, a new `Webhook (Push Trigger)` node validates that
+  token, then a `Map Webhook Payload` node reshapes the Logstash JSON
+  into the same `{elasticsearchId, elasticsearchIndex, source}` shape
+  the poll path already produces — feeding into the same, unmodified
+  `Normalize Error` → `Calculate Fingerprint` → `Claim & Upsert
+  Incident` chain. Zero dedup/fingerprint logic is duplicated between
+  the two trigger paths.
+- The old `Schedule Trigger` interval was reduced from 1 minute to 5
+  minutes: it now exists purely as a slower fallback/reconciliation
+  poll (covering the case where n8n is briefly unreachable when the
+  push fires), not as the primary detection path.
+
+**Idempotency**: because both paths can, in principle, observe the
+same log line, `processed_log_event.elasticsearch_id` is the shared
+key (`ON CONFLICT (elasticsearch_id) DO NOTHING`). Since the webhook
+payload and the eventual ES document carry the same `event_id`, a
+recurrence being caught by both the webhook and the next fallback poll
+is a guaranteed no-op the second time — verified live: a manually
+triggered NPE was picked up by the webhook path in ~230ms, and the
+subsequent scheduled poll run (11 seconds later) saw the same
+`elasticsearch_id` and did not create a duplicate incident or
+`processed_log_event` row.
+
+**Practical implication**: error-to-ticket latency dropped from up to
+60 seconds (worst case under the old 1-minute poll) to well under a
+second, while the schedule poll remains as a safety net against
+missed/dropped webhook deliveries.
+
+## Scope of Stage 9
+
+Not included at this stage: retry/backoff tuning for the Logstash
+`http` output beyond the built-in `automatic_retries => 2`; no
+dead-letter queue for webhook deliveries that exhaust their retries
+(they simply wait for the next fallback poll to pick them up, since
+they're still written to Elasticsearch); and no authentication
+rotation/expiry mechanism for `AUTOFIX_LOGSTASH_WEBHOOK_TOKEN` beyond
+manual rotation via `.env`.
