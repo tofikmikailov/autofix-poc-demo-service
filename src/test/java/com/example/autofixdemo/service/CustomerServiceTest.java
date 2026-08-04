@@ -34,6 +34,16 @@ class CustomerServiceTest {
     }
 
     @Test
+    void returnsDisplayNameWithoutThrowingWhenFirstNameIsNull() {
+        Mockito.when(customerRepository.findById("200"))
+                .thenReturn(Optional.of(new Customer("200", null, "Broken", "broken@example.com")));
+
+        String displayName = customerService.getDisplayName("200");
+
+        assertThat(displayName).isEqualTo(" Broken");
+    }
+
+    @Test
     void throwsCustomerNotFoundExceptionForUnknownCustomer() {
         Mockito.when(customerRepository.findById("999")).thenReturn(Optional.empty());
 
