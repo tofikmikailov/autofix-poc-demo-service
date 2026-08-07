@@ -41,4 +41,24 @@ class CustomerServiceTest {
                 .isInstanceOf(CustomerNotFoundException.class)
                 .hasMessageContaining("999");
     }
+
+    @Test
+    void returnsLastNameOnlyWhenFirstNameIsNull() {
+        Mockito.when(customerRepository.findById("200"))
+                .thenReturn(Optional.of(new Customer("200", null, "Smith", "smith@example.com")));
+
+        String displayName = customerService.getDisplayName("200");
+
+        assertThat(displayName).isEqualTo("Smith");
+    }
+
+    @Test
+    void returnsEmptyStringWhenBothNamesAreNull() {
+        Mockito.when(customerRepository.findById("300"))
+                .thenReturn(Optional.of(new Customer("300", null, null, "empty@example.com")));
+
+        String displayName = customerService.getDisplayName("300");
+
+        assertThat(displayName).isEqualTo("");
+    }
 }
